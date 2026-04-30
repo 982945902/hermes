@@ -41,6 +41,11 @@ type ChannelSnapshot struct {
 	Models    []ModelStats `json:"models"`
 }
 
+type ExternalModelSnapshot struct {
+	ExternalModel string       `json:"external_model"`
+	Routes        []ModelStats `json:"routes"`
+}
+
 type ModelStats struct {
 	ChannelID           string    `json:"channel_id"`
 	Name                string    `json:"name"`
@@ -61,8 +66,9 @@ type ModelStats struct {
 }
 
 type Snapshot struct {
-	GeneratedAt time.Time         `json:"generated_at"`
-	Channels    []ChannelSnapshot `json:"channels"`
+	GeneratedAt time.Time               `json:"generated_at"`
+	Channels    []ChannelSnapshot       `json:"channels"`
+	Models      []ExternalModelSnapshot `json:"models"`
 }
 
 func NewMeter() *Meter {
@@ -135,6 +141,7 @@ func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 	}
 
 	grouped := map[string]*ChannelSnapshot{}
+	byExternalModel := map[string]*ExternalModelSnapshot{}
 	for key, stat := range m.stats {
 		activeChannel, hasActiveFilter := activeRoute[key]
 		if filterRoutes && !hasActiveFilter {
@@ -156,6 +163,16 @@ func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 			grouped[item.ChannelID] = channel
 		}
 		channel.Models = append(channel.Models, item)
+
+		externalModel, ok := byExternalModel[item.ExternalModel]
+		if !ok {
+			externalModel = &ExternalModelSnapshot{
+				ExternalModel: item.ExternalModel,
+				Routes:        []ModelStats{},
+			}
+			byExternalModel[item.ExternalModel] = externalModel
+		}
+		externalModel.Routes = append(externalModel.Routes, item)
 	}
 
 	channels := make([]ChannelSnapshot, 0, len(grouped))
@@ -178,7 +195,34 @@ func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 		}
 		return channelScore(channels[i]) > channelScore(channels[j])
 	})
-	return Snapshot{GeneratedAt: time.Now(), Channels: channels}
+
+	models := make([]ExternalModelSnapshot, 0, len(byExternalModel))
+	for _, externalModel := range byExternalModel {
+		sort.Slice(externalModel.Routes, func(i, j int) bool {
+			if externalModel.Routes[i].Tier != externalModel.Routes[j].Tier {
+				return tierRank(externalModel.Routes[i].Tier) < tierRank(externalModel.Routes[j].Tier)
+			}
+			if externalModel.Routes[i].Score != externalModel.Routes[j].Score {
+				return externalModel.Routes[i].Score > externalModel.Routes[j].Score
+			}
+			if externalModel.Routes[i].Name != externalModel.Routes[j].Name {
+				return externalModel.Routes[i].Name < externalModel.Routes[j].Name
+			}
+			return externalModel.Routes[i].UpstreamModel < externalModel.Routes[j].UpstreamModel
+		})
+		models = append(models, *externalModel)
+	}
+	sort.Slice(models, func(i, j int) bool {
+		leftTier, rightTier := externalModelTier(models[i]), externalModelTier(models[j])
+		if leftTier != rightTier {
+			return tierRank(leftTier) < tierRank(rightTier)
+		}
+		if externalModelScore(models[i]) != externalModelScore(models[j]) {
+			return externalModelScore(models[i]) > externalModelScore(models[j])
+		}
+		return models[i].ExternalModel < models[j].ExternalModel
+	})
+	return Snapshot{GeneratedAt: time.Now(), Channels: channels, Models: models}
 }
 
 func (m *Meter) Rank(routes []model.ChannelRoute) []model.ChannelRoute {
@@ -291,6 +335,26 @@ func channelTier(channel ChannelSnapshot) Tier {
 func channelScore(channel ChannelSnapshot) float64 {
 	best := 0.0
 	for _, stat := range channel.Models {
+		if stat.Score > best {
+			best = stat.Score
+		}
+	}
+	return best
+}
+
+func externalModelTier(model ExternalModelSnapshot) Tier {
+	result := TierUnavailable
+	for _, stat := range model.Routes {
+		if tierRank(stat.Tier) < tierRank(result) {
+			result = stat.Tier
+		}
+	}
+	return result
+}
+
+func externalModelScore(model ExternalModelSnapshot) float64 {
+	best := 0.0
+	for _, stat := range model.Routes {
 		if stat.Score > best {
 			best = stat.Score
 		}

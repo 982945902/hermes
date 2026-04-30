@@ -44,7 +44,13 @@ export type BarometerChannel = {
   models: BarometerModel[]
 }
 
+export type BarometerExternalModel = {
+  external_model: string
+  routes: BarometerModel[]
+}
+
 export type BarometerSnapshot = {
   generated_at: string
   channels: BarometerChannel[]
+  models?: BarometerExternalModel[]
 }

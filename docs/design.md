@@ -144,7 +144,7 @@ Each channel route tracks:
 - Consecutive failures
 - Runtime tier: `excellent`, `unstable`, or `unavailable`
 
-The admin UI groups these rows under each channel, so the visible structure is `channel -> model route metrics`. This matters because the same external model can be mapped to multiple upstream models in one channel and also to upstream models in other channels. Each `channel + external_model + upstream_model` route can behave differently.
+The admin UI groups these rows under each external model, so the visible structure is `external model -> channel/upstream route metrics`. This matters because the same external model can be mapped to multiple upstream models in one channel and also to upstream models in other channels. Each `channel + external_model + upstream_model` route can behave differently.
 
 Composite score:
 

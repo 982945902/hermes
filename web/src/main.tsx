@@ -16,7 +16,7 @@ import {
   testChannel,
   updateChannel,
 } from './api'
-import type { BarometerChannel, BarometerModel, Channel } from './types'
+import type { BarometerChannel, BarometerExternalModel, BarometerModel, Channel } from './types'
 import './styles.css'
 
 const presets = {
@@ -190,7 +190,7 @@ function Shell({ username, onLogout }: { username: string; onLogout: () => void 
 }
 
 function Barometer() {
-  const [channels, setChannels] = React.useState<BarometerChannel[]>([])
+  const [models, setModels] = React.useState<BarometerExternalModel[]>([])
   const [updatedAt, setUpdatedAt] = React.useState('')
 
   React.useEffect(() => {
@@ -199,10 +199,10 @@ function Barometer() {
       try {
         const data = await barometer()
         if (!mounted) return
-        setChannels(data.channels)
+        setModels(data.models && data.models.length > 0 ? data.models : groupBarometerByExternalModel(data.channels))
         setUpdatedAt(data.generated_at)
       } catch {
-        if (mounted) setChannels([])
+        if (mounted) setModels([])
       }
     }
     load()
@@ -220,18 +220,38 @@ function Barometer() {
         <span>{updatedAt ? new Date(updatedAt).toLocaleTimeString() : '暂无样本'}</span>
       </div>
       <div className="barometer-grid">
-        {channels.length === 0 ? (
+        {models.length === 0 ? (
           <p className="muted">请求或渠道测试后会显示实时指标。</p>
         ) : (
-          channels.map((channel) => <BarometerCard key={channel.channel_id} channel={channel} />)
+          models.map((model) => <BarometerCard key={model.external_model} model={model} />)
         )}
       </div>
     </section>
   )
 }
 
-function BarometerCard({ channel }: { channel: BarometerChannel }) {
-  const bestTier = channel.models.reduce<BarometerModel['tier'] | undefined>((tier, item) => {
+function groupBarometerByExternalModel(channels: BarometerChannel[]): BarometerExternalModel[] {
+  const grouped = new Map<string, BarometerModel[]>()
+  for (const channel of channels) {
+    for (const route of channel.models) {
+      grouped.set(route.external_model, [...(grouped.get(route.external_model) || []), route])
+    }
+  }
+  return Array.from(grouped.entries())
+    .map(([external_model, routes]) => ({
+      external_model,
+      routes: routes.sort((left, right) => routeSortValue(left) - routeSortValue(right)),
+    }))
+    .sort((left, right) => routeSortValue(left.routes[0]) - routeSortValue(right.routes[0]))
+}
+
+function routeSortValue(route?: BarometerModel) {
+  if (!route) return 99
+  return tierRank(route.tier) * 100 - route.score
+}
+
+function BarometerCard({ model }: { model: BarometerExternalModel }) {
+  const bestTier = model.routes.reduce<BarometerModel['tier'] | undefined>((tier, item) => {
     if (!tier) return item.tier
     return tierRank(item.tier) < tierRank(tier) ? item.tier : tier
   }, undefined)
@@ -239,14 +259,14 @@ function BarometerCard({ channel }: { channel: BarometerChannel }) {
     <div className={`barometer-card ${bestTier || 'excellent'}`}>
       <div className="barometer-head">
         <div>
-          <strong>{channel.name}</strong>
-          <span>{channel.provider}</span>
+          <strong>{model.external_model}</strong>
+          <span>对外模型路由池</span>
         </div>
-        <b>{channel.models.length} 个模型</b>
+        <b>{model.routes.length} 条路由</b>
       </div>
       <div className="barometer-models">
-        {channel.models.map((item) => (
-          <BarometerModelRow key={`${item.external_model}-${item.upstream_model}`} item={item} />
+        {model.routes.map((item) => (
+          <BarometerModelRow key={`${item.channel_id}-${item.upstream_model}`} item={item} />
         ))}
       </div>
     </div>
@@ -261,8 +281,10 @@ function BarometerModelRow({ item }: { item: BarometerModel }) {
     <div className={`barometer-model ${item.tier}`}>
       <div className="barometer-model-title">
         <div>
-          <strong>{item.external_model}</strong>
-          <span>{item.upstream_model === item.external_model ? '直连上游模型' : `映射到 ${item.upstream_model}`}</span>
+          <strong>{item.name}</strong>
+          <span>
+            {item.provider} · {item.upstream_model}
+          </span>
         </div>
         <b>{tierLabel(item.tier)}</b>
       </div>
