@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/982945902/hermes/internal/auth"
+	"github.com/982945902/hermes/internal/cache"
 	"github.com/982945902/hermes/internal/health"
 	"github.com/982945902/hermes/internal/model"
 	"github.com/982945902/hermes/internal/provider"
@@ -16,6 +17,7 @@ import (
 
 type AdminHandler struct {
 	store    *store.Store
+	cache    *cache.ChannelCache
 	auth     *auth.Service
 	provider *provider.OpenAICompatible
 	meter    *health.Meter
@@ -30,8 +32,8 @@ type channelTestRequest struct {
 	Prompt string `json:"prompt"`
 }
 
-func NewAdminHandler(store *store.Store, auth *auth.Service, provider *provider.OpenAICompatible, meter *health.Meter) *AdminHandler {
-	return &AdminHandler{store: store, auth: auth, provider: provider, meter: meter}
+func NewAdminHandler(store *store.Store, channelCache *cache.ChannelCache, auth *auth.Service, provider *provider.OpenAICompatible, meter *health.Meter) *AdminHandler {
+	return &AdminHandler{store: store, cache: channelCache, auth: auth, provider: provider, meter: meter}
 }
 
 func (h *AdminHandler) Login(c *gin.Context) {
@@ -54,8 +56,9 @@ func (h *AdminHandler) Me(c *gin.Context) {
 
 func (h *AdminHandler) Status(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"status": "ok",
-		"time":   time.Now(),
+		"status":                   "ok",
+		"time":                     time.Now(),
+		"channel_cache_updated_at": h.cache.UpdatedAt(),
 	})
 }
 
@@ -103,6 +106,7 @@ func (h *AdminHandler) CreateChannel(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create channel"})
 		return
 	}
+	h.cache.ReloadAsync()
 	c.JSON(http.StatusCreated, channel.Public(true))
 }
 
@@ -120,6 +124,7 @@ func (h *AdminHandler) UpdateChannel(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update channel"})
 		return
 	}
+	h.cache.ReloadAsync()
 	updated, _ := h.store.GetChannel(c.Request.Context(), c.Param("id"))
 	if updated == nil {
 		c.Status(http.StatusNoContent)
@@ -133,6 +138,7 @@ func (h *AdminHandler) DeleteChannel(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete channel"})
 		return
 	}
+	h.cache.ReloadAsync()
 	c.Status(http.StatusNoContent)
 }
 
@@ -152,6 +158,7 @@ func (h *AdminHandler) TestChannel(c *gin.Context) {
 		lastError = testErr.Error()
 	}
 	_ = h.store.UpdateChannelTestResult(c.Request.Context(), c.Param("id"), lastError)
+	h.cache.ReloadAsync()
 	if testErr != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": lastError})
 		return

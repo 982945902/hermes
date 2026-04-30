@@ -10,16 +10,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/982945902/hermes/internal/cache"
 	"github.com/982945902/hermes/internal/health"
 	"github.com/982945902/hermes/internal/identity"
 	"github.com/982945902/hermes/internal/model"
 	"github.com/982945902/hermes/internal/provider"
-	"github.com/982945902/hermes/internal/store"
 	"github.com/gin-gonic/gin"
 )
 
 type Handler struct {
-	store    *store.Store
+	cache    *cache.ChannelCache
 	provider *provider.OpenAICompatible
 	meter    *health.Meter
 	guard    identity.Guard
@@ -30,16 +30,12 @@ type chatEnvelope struct {
 	Stream bool   `json:"stream"`
 }
 
-func NewHandler(store *store.Store, provider *provider.OpenAICompatible, meter *health.Meter, guard identity.Guard) *Handler {
-	return &Handler{store: store, provider: provider, meter: meter, guard: guard}
+func NewHandler(channelCache *cache.ChannelCache, provider *provider.OpenAICompatible, meter *health.Meter, guard identity.Guard) *Handler {
+	return &Handler{cache: channelCache, provider: provider, meter: meter, guard: guard}
 }
 
 func (h *Handler) ListModels(c *gin.Context) {
-	models, err := h.store.ListPublicModels(c.Request.Context())
-	if err != nil {
-		openAIError(c, http.StatusInternalServerError, "failed to list models")
-		return
-	}
+	models := h.cache.ListModels()
 	data := make([]gin.H, 0, len(models))
 	now := time.Now().Unix()
 	for _, name := range models {
@@ -87,11 +83,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	channels, err := h.store.FindChannelsForModel(c.Request.Context(), envelope.Model)
-	if err != nil {
-		openAIError(c, http.StatusInternalServerError, "failed to select channel")
-		return
-	}
+	channels := h.cache.FindByModel(envelope.Model)
 	if len(channels) == 0 {
 		openAIError(c, http.StatusNotFound, "model is not available")
 		return

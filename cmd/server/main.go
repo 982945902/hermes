@@ -8,6 +8,7 @@ import (
 
 	"github.com/982945902/hermes/internal/api"
 	"github.com/982945902/hermes/internal/auth"
+	"github.com/982945902/hermes/internal/cache"
 	"github.com/982945902/hermes/internal/config"
 	"github.com/982945902/hermes/internal/health"
 	"github.com/982945902/hermes/internal/identity"
@@ -30,14 +31,19 @@ func main() {
 	if err := db.EnsureIndexes(context.Background()); err != nil {
 		log.Fatalf("ensure indexes: %v", err)
 	}
+	channelCache := cache.NewChannelCache(db, cfg.ChannelSyncEvery)
+	if err := channelCache.Load(context.Background()); err != nil {
+		log.Fatalf("load channel cache: %v", err)
+	}
+	channelCache.Start(context.Background())
 
 	httpClient := &http.Client{Timeout: cfg.UpstreamTimeout}
 	provider := provider.NewOpenAICompatible(httpClient)
 	meter := health.NewMeter()
 	guard := identity.NewGuard(cfg.IdentityName, cfg.IdentityEnabled)
 	authService := auth.New(cfg)
-	adminHandler := api.NewAdminHandler(db, authService, provider, meter)
-	relayHandler := relay.NewHandler(db, provider, meter, guard)
+	adminHandler := api.NewAdminHandler(db, channelCache, authService, provider, meter)
+	relayHandler := relay.NewHandler(channelCache, provider, meter, guard)
 	router := server.NewRouter(cfg, authService, adminHandler, relayHandler)
 
 	log.Printf("hermes listening on :%s", cfg.Port)

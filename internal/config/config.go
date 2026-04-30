@@ -20,6 +20,7 @@ type Config struct {
 	UpstreamTimeout   time.Duration
 	IdentityName      string
 	IdentityEnabled   bool
+	ChannelSyncEvery  time.Duration
 }
 
 func Load() Config {
@@ -38,6 +39,7 @@ func Load() Config {
 		UpstreamTimeout:   120 * time.Second,
 		IdentityName:      env("IDENTITY_NAME", "Hermes AI"),
 		IdentityEnabled:   envBool("IDENTITY_ENABLED", true),
+		ChannelSyncEvery:  envDuration("CHANNEL_SYNC_INTERVAL", 30*time.Second),
 	}
 }
 
@@ -55,6 +57,18 @@ func envBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return fallback
+	}
+	return duration
 }
 
 func loadDotEnv(path string) {
