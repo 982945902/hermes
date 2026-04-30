@@ -36,17 +36,30 @@ func NewHandler(channelCache *cache.ChannelCache, provider *provider.OpenAICompa
 
 func (h *Handler) ListModels(c *gin.Context) {
 	models := h.cache.ListModels()
-	data := make([]gin.H, 0, len(models))
-	now := time.Now().Unix()
+	allowedModels := make([]string, 0, len(models))
 	for _, name := range models {
-		data = append(data, gin.H{
-			"id":       name,
-			"object":   "model",
-			"created":  now,
-			"owned_by": "hermes",
-		})
+		if tokenAllowsModel(c, name) {
+			allowedModels = append(allowedModels, name)
+		}
+	}
+	data := make([]gin.H, 0, len(allowedModels)+1)
+	now := time.Now().Unix()
+	if len(allowedModels) > 0 {
+		data = append(data, modelItem("auto", now))
+	}
+	for _, name := range allowedModels {
+		data = append(data, modelItem(name, now))
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
+}
+
+func modelItem(name string, created int64) gin.H {
+	return gin.H{
+		"id":       name,
+		"object":   "model",
+		"created":  created,
+		"owned_by": "hermes",
+	}
 }
 
 func (h *Handler) ChatCompletions(c *gin.Context) {
@@ -60,9 +73,31 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		openAIError(c, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if strings.TrimSpace(envelope.Model) == "" {
-		openAIError(c, http.StatusBadRequest, "model is required")
-		return
+
+	requestedModel := strings.TrimSpace(envelope.Model)
+	autoModel := requestedModel == "" || strings.EqualFold(requestedModel, "auto")
+	var routes []model.ChannelRoute
+	if autoModel {
+		allRoutes := h.cache.ListRoutes()
+		if len(allRoutes) == 0 {
+			openAIError(c, http.StatusNotFound, "no models are available")
+			return
+		}
+		routes = filterRoutesByToken(c, allRoutes)
+		if len(routes) == 0 {
+			openAIError(c, http.StatusForbidden, "no models are allowed by this API key")
+			return
+		}
+	} else {
+		if !tokenAllowsModel(c, requestedModel) {
+			openAIError(c, http.StatusForbidden, "model is not allowed by this API key")
+			return
+		}
+		routes = h.cache.FindByModel(requestedModel)
+		if len(routes) == 0 {
+			openAIError(c, http.StatusNotFound, "model is not available")
+			return
+		}
 	}
 	if h.guard.IsProbeRequest(body) {
 		if envelope.Stream {
@@ -83,11 +118,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	routes := h.cache.FindByModel(envelope.Model)
-	if len(routes) == 0 {
-		openAIError(c, http.StatusNotFound, "model is not available")
-		return
-	}
 	ordered := h.meter.Rank(routes)
 	if len(ordered) == 0 {
 		openAIError(c, http.StatusServiceUnavailable, "all matching channels are currently unavailable")
@@ -174,6 +204,31 @@ func boolQuality(success bool) float64 {
 		return 0.78
 	}
 	return 0
+}
+
+func tokenAllowsModel(c *gin.Context, modelName string) bool {
+	if !c.GetBool("api_token_model_limits_enabled") {
+		return true
+	}
+	raw, ok := c.Get("api_token_model_limits")
+	if !ok {
+		return false
+	}
+	limits, ok := raw.(map[string]bool)
+	if !ok {
+		return false
+	}
+	return limits[strings.TrimSpace(modelName)]
+}
+
+func filterRoutesByToken(c *gin.Context, routes []model.ChannelRoute) []model.ChannelRoute {
+	out := make([]model.ChannelRoute, 0, len(routes))
+	for _, route := range routes {
+		if tokenAllowsModel(c, route.ExternalModel) {
+			out = append(out, route)
+		}
+	}
+	return out
 }
 
 func proxyResponse(c *gin.Context, resp *http.Response, guard identity.Guard) {

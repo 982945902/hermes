@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ type ChannelCache struct {
 	mu        sync.RWMutex
 	byID      map[string]model.Channel
 	byModel   map[string][]model.ChannelRoute
+	routes    []model.ChannelRoute
 	all       []model.Channel
 	updatedAt time.Time
 }
@@ -36,6 +38,7 @@ func (c *ChannelCache) Load(ctx context.Context) error {
 	}
 	byID := make(map[string]model.Channel, len(channels))
 	byModel := make(map[string][]model.ChannelRoute)
+	routes := make([]model.ChannelRoute, 0)
 	all := make([]model.Channel, 0, len(channels))
 	for _, channel := range channels {
 		channel.Normalize()
@@ -50,11 +53,13 @@ func (c *ChannelCache) Load(ctx context.Context) error {
 				continue
 			}
 			byModel[route.ExternalModel] = append(byModel[route.ExternalModel], route)
+			routes = append(routes, route)
 		}
 	}
 	c.mu.Lock()
 	c.byID = byID
 	c.byModel = byModel
+	c.routes = routes
 	c.all = all
 	c.updatedAt = time.Now()
 	c.mu.Unlock()
@@ -108,6 +113,14 @@ func (c *ChannelCache) ListChannels() []model.Channel {
 	return out
 }
 
+func (c *ChannelCache) ListRoutes() []model.ChannelRoute {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]model.ChannelRoute, len(c.routes))
+	copy(out, c.routes)
+	return out
+}
+
 func (c *ChannelCache) ListModels() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -115,6 +128,7 @@ func (c *ChannelCache) ListModels() []string {
 	for modelName := range c.byModel {
 		models = append(models, modelName)
 	}
+	sort.Strings(models)
 	return models
 }
 
