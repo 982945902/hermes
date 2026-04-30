@@ -428,10 +428,23 @@ function Editor({
   const [modelSearch, setModelSearch] = React.useState('')
   const [modelError, setModelError] = React.useState('')
   const [fetching, setFetching] = React.useState(false)
+  const [upstreamModels, setUpstreamModels] = React.useState<string[]>([])
+  const [externalDrafts, setExternalDrafts] = React.useState<Record<string, string>>({})
   const availableModels = React.useMemo(() => {
-    const set = new Set<string>([...channel.models, ...Object.values(channel.model_mapping || {})])
-    return Array.from(set).filter((item) => item.toLowerCase().includes(modelSearch.toLowerCase()))
-  }, [channel.models, channel.model_mapping, modelSearch])
+    const set = new Set<string>([
+      ...upstreamModels,
+      ...Object.values(channel.model_mapping || {}),
+      ...channel.models.map((modelName) => channel.model_mapping[modelName] || modelName),
+    ])
+    const query = modelSearch.toLowerCase()
+    return Array.from(set).filter((upstreamModel) => {
+      const externalModel =
+        channel.models.find((modelName) => (channel.model_mapping[modelName] || modelName) === upstreamModel) ||
+        externalDrafts[upstreamModel] ||
+        upstreamModel
+      return upstreamModel.toLowerCase().includes(query) || externalModel.toLowerCase().includes(query)
+    })
+  }, [channel.models, channel.model_mapping, externalDrafts, modelSearch, upstreamModels])
 
   function patch(update: Partial<Channel>) {
     setChannel({ ...channel, ...update })
@@ -459,11 +472,14 @@ function Editor({
         api_key: channel.api_key,
         extra_headers: channel.extra_headers || {},
       })
-      const nextMapping = { ...channel.model_mapping }
-      for (const modelName of result.data) {
-        if (!nextMapping[modelName]) nextMapping[modelName] = modelName
-      }
-      patch({ model_mapping: nextMapping })
+      setUpstreamModels(result.data)
+      setExternalDrafts((drafts) => {
+        const nextDrafts = { ...drafts }
+        for (const upstreamModel of result.data) {
+          if (!nextDrafts[upstreamModel]) nextDrafts[upstreamModel] = findExternalModel(upstreamModel) || upstreamModel
+        }
+        return nextDrafts
+      })
     } catch (err) {
       setModelError(err instanceof Error ? err.message : '拉取模型失败')
     } finally {
@@ -471,13 +487,44 @@ function Editor({
     }
   }
 
-  function toggleModel(modelName: string, checked: boolean) {
-    const models = checked ? Array.from(new Set([...channel.models, modelName])) : channel.models.filter((item) => item !== modelName)
-    patch({ models })
+  function findExternalModel(upstreamModel: string) {
+    return channel.models.find((modelName) => (channel.model_mapping[modelName] || modelName) === upstreamModel) || ''
   }
 
-  function setMapping(modelName: string, upstream: string) {
-    patch({ model_mapping: { ...channel.model_mapping, [modelName]: upstream } })
+  function externalValue(upstreamModel: string) {
+    return externalDrafts[upstreamModel] || findExternalModel(upstreamModel) || upstreamModel
+  }
+
+  function setExternalValue(upstreamModel: string, externalModel: string) {
+    setExternalDrafts((drafts) => ({ ...drafts, [upstreamModel]: externalModel }))
+    const existingExternal = findExternalModel(upstreamModel)
+    if (!existingExternal) return
+    const nextExternal = externalModel.trim()
+    const nextModels = channel.models.filter((item) => item !== existingExternal)
+    const nextMapping = { ...channel.model_mapping }
+    delete nextMapping[existingExternal]
+    if (nextExternal) {
+      nextModels.push(nextExternal)
+      nextMapping[nextExternal] = upstreamModel
+    }
+    patch({ models: Array.from(new Set(nextModels)), model_mapping: nextMapping })
+  }
+
+  function toggleModel(upstreamModel: string, checked: boolean) {
+    const existingExternal = findExternalModel(upstreamModel)
+    const externalModel = externalValue(upstreamModel).trim()
+    const nextModels = channel.models.filter((item) => item !== existingExternal)
+    const nextMapping = { ...channel.model_mapping }
+    if (existingExternal) delete nextMapping[existingExternal]
+    if (checked) {
+      if (!externalModel) {
+        setModelError('请填写对外模型名称')
+        return
+      }
+      nextModels.push(externalModel)
+      nextMapping[externalModel] = upstreamModel
+    }
+    patch({ models: Array.from(new Set(nextModels)), model_mapping: nextMapping })
   }
 
   return (
@@ -507,7 +554,7 @@ function Editor({
         <div className="model-toolbar">
           <div>
             <h3>模型映射</h3>
-            <p>先拉取上游模型，勾选要对外暴露的模型；右侧可填写对外模型对应的真实上游模型。</p>
+            <p>左侧是上游真实模型；勾选后在右侧填写对外模型名称，保存后按“对外模型 → 上游模型”转发。</p>
           </div>
           <button onClick={loadModels} disabled={fetching || !channel.base_url || !channel.api_key}>
             <RefreshCw size={17} />
@@ -518,25 +565,28 @@ function Editor({
         {modelError ? <p className="error">{modelError}</p> : null}
         <div className="model-list">
           {availableModels.length === 0 ? (
-            <p className="muted">填写 URL 和 Key 后点击拉取模型。</p>
+            <p className="muted">填写 URL 和 Key 后点击拉取模型。默认不启用，需要手动勾选。</p>
           ) : (
-            availableModels.map((modelName) => (
-              <div className="model-item" key={modelName}>
+            availableModels.map((upstreamModel) => {
+              const checked = Boolean(findExternalModel(upstreamModel))
+              return (
+              <div className="model-item" key={upstreamModel}>
                 <label className="model-check">
                   <input
                     type="checkbox"
-                    checked={channel.models.includes(modelName)}
-                    onChange={(e) => toggleModel(modelName, e.target.checked)}
+                    checked={checked}
+                    onChange={(e) => toggleModel(upstreamModel, e.target.checked)}
                   />
-                  <span>{modelName}</span>
+                  <span>{upstreamModel}</span>
                 </label>
                 <input
-                  value={channel.model_mapping[modelName] || modelName}
-                  onChange={(e) => setMapping(modelName, e.target.value)}
-                  placeholder="上游真实模型"
+                  value={externalValue(upstreamModel)}
+                  onChange={(e) => setExternalValue(upstreamModel, e.target.value)}
+                  placeholder="对外模型名称"
                 />
               </div>
-            ))
+              )
+            })
           )}
         </div>
       </div>
@@ -626,10 +676,15 @@ function parseObject(value: string): Record<string, string> {
 }
 
 function normalizeChannel(channel: Channel): Channel {
+  const models = channel.models.map((modelName) => modelName.trim()).filter(Boolean)
+  const model_mapping: Record<string, string> = {}
+  for (const modelName of models) {
+    model_mapping[modelName] = channel.model_mapping?.[modelName] || modelName
+  }
   return {
     ...channel,
-    models: channel.models.filter(Boolean),
-    model_mapping: channel.model_mapping || {},
+    models,
+    model_mapping,
     extra_headers: channel.extra_headers || {},
     strategy: channel.strategy || {},
     weight: channel.weight > 0 ? channel.weight : 1,
