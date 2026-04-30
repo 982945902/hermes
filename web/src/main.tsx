@@ -497,22 +497,33 @@ function Editor({
   }
 
   function externalValue(upstreamModel: string) {
-    return externalDrafts[upstreamModel] || findExternalModel(upstreamModel) || upstreamModel
+    const selectedExternal = findExternalModel(upstreamModel)
+    return (externalDrafts[upstreamModel] ?? selectedExternal) || upstreamModel
   }
 
-  function setExternalValue(upstreamModel: string, externalModel: string) {
+  function setExternalDraft(upstreamModel: string, externalModel: string) {
     setExternalDrafts((drafts) => ({ ...drafts, [upstreamModel]: externalModel }))
+  }
+
+  function commitExternalName(upstreamModel: string) {
     setChannel((current) => {
       const existingExternal = findExternalIn(current, upstreamModel)
       if (!existingExternal) return current
-      const nextExternal = externalModel.trim()
+      const nextExternal = (externalDrafts[upstreamModel] ?? existingExternal).trim()
+      if (!nextExternal) {
+        setModelError('对外模型名称不能为空')
+        return current
+      }
+      if (current.models.some((item) => item !== existingExternal && item === nextExternal)) {
+        setModelError(`对外模型 ${nextExternal} 已存在`)
+        return current
+      }
       const nextModels = current.models.filter((item) => item !== existingExternal)
       const nextMapping = { ...current.model_mapping }
       delete nextMapping[existingExternal]
-      if (nextExternal) {
-        nextModels.push(nextExternal)
-        nextMapping[nextExternal] = upstreamModel
-      }
+      nextModels.push(nextExternal)
+      nextMapping[nextExternal] = upstreamModel
+      setModelError('')
       return { ...current, models: Array.from(new Set(nextModels)), model_mapping: nextMapping }
     })
   }
@@ -521,13 +532,18 @@ function Editor({
     setModelError('')
     setChannel((current) => {
       const existingExternal = findExternalIn(current, upstreamModel)
-      const externalModel = (externalDrafts[upstreamModel] || existingExternal || upstreamModel).trim()
       const nextModels = current.models.filter((item) => item !== existingExternal)
       const nextMapping = { ...current.model_mapping }
       if (existingExternal) delete nextMapping[existingExternal]
       if (checked) {
+        const rawExternal = externalDrafts[upstreamModel] ?? existingExternal
+        const externalModel = (rawExternal || upstreamModel).trim()
         if (!externalModel) {
           setModelError('请填写对外模型名称')
+          return current
+        }
+        if (current.models.some((item) => item !== existingExternal && item === externalModel)) {
+          setModelError(`对外模型 ${externalModel} 已存在`)
           return current
         }
         nextModels.push(externalModel)
@@ -591,7 +607,8 @@ function Editor({
                 </label>
                 <input
                   value={externalValue(upstreamModel)}
-                  onChange={(e) => setExternalValue(upstreamModel, e.target.value)}
+                  onChange={(e) => setExternalDraft(upstreamModel, e.target.value)}
+                  onBlur={() => commitExternalName(upstreamModel)}
                   placeholder="对外模型名称"
                 />
               </div>
