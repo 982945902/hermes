@@ -1,0 +1,14 @@
+.DS_Store
+.env
+dist/
+tmp/
+*.log
+
+# Go
+bin/
+/server
+coverage.out
+
+# Frontend
+web/node_modules/
+web/dist/
