@@ -463,7 +463,7 @@ function Editor({
       for (const modelName of result.data) {
         if (!nextMapping[modelName]) nextMapping[modelName] = modelName
       }
-      patch({ models: result.data, model_mapping: nextMapping })
+      patch({ model_mapping: nextMapping })
     } catch (err) {
       setModelError(err instanceof Error ? err.message : '拉取模型失败')
     } finally {
