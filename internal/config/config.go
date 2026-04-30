@@ -30,7 +30,7 @@ func Load() Config {
 		MongoURI:          env("MONGO_URI", "mongodb://localhost:27017"),
 		MongoDatabase:     env("MONGO_DATABASE", "hermes"),
 		AdminUsername:     env("ADMIN_USERNAME", "admin"),
-		AdminPassword:     os.Getenv("ADMIN_PASSWORD"),
+		AdminPassword:     env("ADMIN_PASSWORD", "admin123"),
 		AdminPasswordHash: os.Getenv("ADMIN_PASSWORD_HASH"),
 		JWTSecret:         env("JWT_SECRET", "change-me"),
 		GatewayAPIKey:     env("GATEWAY_API_KEY", ""),
