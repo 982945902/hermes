@@ -85,16 +85,19 @@ func (p *OpenAICompatible) FetchModels(ctx context.Context, channel model.Channe
 	return parseModelList(data), nil
 }
 
-func (p *OpenAICompatible) Test(ctx context.Context, channel model.Channel, prompt string) (string, error) {
+func (p *OpenAICompatible) Test(ctx context.Context, channel model.Channel, modelName string, prompt string) (string, error) {
 	if len(channel.Models) == 0 {
 		return "", fmt.Errorf("channel has no models")
 	}
 	if strings.TrimSpace(prompt) == "" {
 		prompt = "请用一句话回复：Hermes channel test ok"
 	}
-	modelName := channel.UpstreamModel(channel.Models[0])
+	if strings.TrimSpace(modelName) == "" {
+		modelName = channel.Models[0]
+	}
+	upstreamModel := channel.UpstreamModel(modelName)
 	body, err := json.Marshal(map[string]any{
-		"model":      modelName,
+		"model":      upstreamModel,
 		"messages":   []map[string]string{{"role": "user", "content": prompt}},
 		"max_tokens": 256,
 		"stream":     false,
@@ -102,7 +105,7 @@ func (p *OpenAICompatible) Test(ctx context.Context, channel model.Channel, prom
 	if err != nil {
 		return "", err
 	}
-	req, err := p.BuildChatRequest(ctx, channel, body, modelName)
+	req, err := p.BuildChatRequest(ctx, channel, body, upstreamModel)
 	if err != nil {
 		return "", err
 	}

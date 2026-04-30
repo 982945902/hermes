@@ -243,7 +243,8 @@ function Channels() {
   const [editing, setEditing] = React.useState<Channel>(emptyChannel())
   const [message, setMessage] = React.useState('')
   const [testPrompt, setTestPrompt] = React.useState('请用一句话回复：Hermes channel test ok')
-  const [testResponse, setTestResponse] = React.useState('')
+  const [testModel, setTestModel] = React.useState('')
+  const [testMessages, setTestMessages] = React.useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
 
   async function load() {
     const data = await listChannels()
@@ -270,12 +271,17 @@ function Channels() {
 
   async function runTest(channel: Channel) {
     if (!channel.id) return
-    setMessage(`Testing ${channel.name}`)
-    setTestResponse('')
+    const modelName = testModel || channel.models[0] || ''
+    if (!modelName) {
+      setMessage('请先为渠道选择至少一个模型')
+      return
+    }
+    setMessage(`正在测试 ${channel.name}`)
+    setTestMessages((items) => [...items, { role: 'user', content: testPrompt }])
     try {
-      const result = await testChannel(channel.id, testPrompt)
+      const result = await testChannel(channel.id, modelName, testPrompt)
       setMessage(`${channel.name} 测试成功`)
-      setTestResponse(result.response || '(empty response)')
+      setTestMessages((items) => [...items, { role: 'assistant', content: result.response || '(empty response)' }])
       await load()
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Test failed')
@@ -333,7 +339,9 @@ function Channels() {
         message={message}
         testPrompt={testPrompt}
         setTestPrompt={setTestPrompt}
-        testResponse={testResponse}
+        testModel={testModel}
+        setTestModel={setTestModel}
+        testMessages={testMessages}
       />
     </section>
   )
@@ -346,7 +354,9 @@ function Editor({
   message,
   testPrompt,
   setTestPrompt,
-  testResponse,
+  testModel,
+  setTestModel,
+  testMessages,
 }: {
   channel: Channel
   setChannel: (channel: Channel) => void
@@ -354,7 +364,9 @@ function Editor({
   message: string
   testPrompt: string
   setTestPrompt: (value: string) => void
-  testResponse: string
+  testModel: string
+  setTestModel: (value: string) => void
+  testMessages: Array<{ role: 'user' | 'assistant'; content: string }>
 }) {
   const [modelSearch, setModelSearch] = React.useState('')
   const [modelError, setModelError] = React.useState('')
@@ -367,6 +379,13 @@ function Editor({
   function patch(update: Partial<Channel>) {
     setChannel({ ...channel, ...update })
   }
+
+  React.useEffect(() => {
+    if (!channel.models.length) return
+    if (!testModel || !channel.models.includes(testModel)) {
+      setTestModel(channel.models[0])
+    }
+  }, [channel.models, testModel, setTestModel])
 
   function applyProvider(provider: string) {
     const preset = presets[provider as keyof typeof presets] || presets.custom
@@ -484,8 +503,33 @@ function Editor({
       {message ? <p className="message">{message}</p> : null}
       <div className="test-box">
         <h3>渠道对话测试</h3>
-        <textarea value={testPrompt} onChange={(e) => setTestPrompt(e.target.value)} />
-        {testResponse ? <pre>{testResponse}</pre> : null}
+        <label>
+          测试模型
+          <select value={testModel} onChange={(e) => setTestModel(e.target.value)}>
+            {channel.models.length === 0 ? <option value="">请先勾选模型</option> : null}
+            {channel.models.map((modelName) => (
+              <option key={modelName} value={modelName}>
+                {modelName} → {channel.model_mapping[modelName] || modelName}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          用户消息
+          <textarea value={testPrompt} onChange={(e) => setTestPrompt(e.target.value)} />
+        </label>
+        <div className="chat-preview">
+          {testMessages.length === 0 ? (
+            <p className="muted">点击渠道行里的测试按钮发送当前消息。</p>
+          ) : (
+            testMessages.map((item, index) => (
+              <div className={`chat-bubble ${item.role}`} key={`${item.role}-${index}`}>
+                <b>{item.role === 'user' ? '你' : '模型'}</b>
+                <p>{item.content}</p>
+              </div>
+            ))
+          )}
+        </div>
       </div>
     </div>
   )

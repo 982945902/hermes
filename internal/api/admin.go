@@ -30,6 +30,7 @@ type loginRequest struct {
 
 type channelTestRequest struct {
 	Prompt string `json:"prompt"`
+	Model  string `json:"model"`
 }
 
 type fetchModelsRequest struct {
@@ -159,7 +160,7 @@ func (h *AdminHandler) TestChannel(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
-	result, testErr := h.provider.Test(ctx, *channel, req.Prompt)
+	result, testErr := h.provider.Test(ctx, *channel, req.Model, req.Prompt)
 	lastError := ""
 	if testErr != nil {
 		lastError = testErr.Error()
