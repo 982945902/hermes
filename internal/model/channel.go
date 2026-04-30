@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ type Channel struct {
 	Provider      string              `bson:"provider" json:"provider"`
 	BaseURL       string              `bson:"base_url" json:"base_url"`
 	APIKey        string              `bson:"api_key" json:"api_key,omitempty"`
+	Keys          []ChannelKey        `bson:"keys,omitempty" json:"keys,omitempty"`
 	Models        []string            `bson:"models" json:"models"`
 	ModelMapping  map[string]string   `bson:"model_mapping" json:"model_mapping"`
 	ModelMappings map[string][]string `bson:"model_mappings" json:"model_mappings"`
@@ -31,6 +33,15 @@ type Channel struct {
 	LastTestAt    *time.Time          `bson:"last_test_at,omitempty" json:"last_test_at,omitempty"`
 	CreatedAt     time.Time           `bson:"created_at" json:"created_at"`
 	UpdatedAt     time.Time           `bson:"updated_at" json:"updated_at"`
+}
+
+type ChannelKey struct {
+	ID       string `bson:"id" json:"id"`
+	Name     string `bson:"name" json:"name"`
+	APIKey   string `bson:"api_key" json:"api_key,omitempty"`
+	Enabled  *bool  `bson:"enabled,omitempty" json:"enabled,omitempty"`
+	Priority int    `bson:"priority" json:"priority"`
+	Weight   int    `bson:"weight" json:"weight"`
 }
 
 type ChannelRoute struct {
@@ -46,8 +57,50 @@ func (r ChannelRoute) Key() string {
 func (c Channel) Public(maskKey bool) Channel {
 	if maskKey {
 		c.APIKey = maskAPIKey(c.APIKey)
+		keys := make([]ChannelKey, len(c.Keys))
+		copy(keys, c.Keys)
+		c.Keys = keys
+		for i := range c.Keys {
+			c.Keys[i].APIKey = maskAPIKey(c.Keys[i].APIKey)
+		}
 	}
 	return c
+}
+
+func (c Channel) ActiveKeys() []ChannelKey {
+	keys := make([]ChannelKey, 0, len(c.Keys))
+	for _, key := range c.Keys {
+		key.APIKey = strings.TrimSpace(key.APIKey)
+		if key.APIKey == "" || strings.Contains(key.APIKey, "********") || !key.IsEnabled() {
+			continue
+		}
+		if key.Weight <= 0 {
+			key.Weight = 1
+		}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func (c Channel) HasConfiguredKey(allowMasked bool) bool {
+	for _, key := range c.Keys {
+		apiKey := strings.TrimSpace(key.APIKey)
+		if !key.IsEnabled() {
+			continue
+		}
+		if apiKey == "" {
+			continue
+		}
+		if allowMasked || !strings.Contains(apiKey, "********") {
+			return true
+		}
+	}
+	apiKey := strings.TrimSpace(c.APIKey)
+	return apiKey != "" && (allowMasked || !strings.Contains(apiKey, "********"))
+}
+
+func (c ChannelKey) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
 }
 
 func (c Channel) UpstreamModel(model string) string {
@@ -139,6 +192,10 @@ func (c *Channel) Normalize() {
 	if c.Models == nil {
 		c.Models = []string{}
 	}
+	c.Keys = normalizeChannelKeys(c.Keys, c.APIKey)
+	if len(c.Keys) > 0 {
+		c.APIKey = primaryChannelAPIKey(c.Keys)
+	}
 	if c.ModelMapping == nil {
 		c.ModelMapping = map[string]string{}
 	}
@@ -167,6 +224,64 @@ func (c *Channel) Normalize() {
 	if c.Weight <= 0 {
 		c.Weight = 1
 	}
+}
+
+func normalizeChannelKeys(keys []ChannelKey, legacyAPIKey string) []ChannelKey {
+	legacyAPIKey = strings.TrimSpace(legacyAPIKey)
+	legacyIsActual := legacyAPIKey != "" && !strings.Contains(legacyAPIKey, "********")
+	if len(keys) == 0 && legacyAPIKey != "" {
+		return []ChannelKey{{
+			ID:      "default",
+			Name:    "Default",
+			APIKey:  legacyAPIKey,
+			Enabled: boolPtr(true),
+			Weight:  1,
+		}}
+	}
+
+	result := make([]ChannelKey, 0, len(keys))
+	seen := map[string]struct{}{}
+	for i, key := range keys {
+		key.ID = strings.TrimSpace(key.ID)
+		key.Name = strings.TrimSpace(key.Name)
+		key.APIKey = strings.TrimSpace(key.APIKey)
+		if i == 0 && legacyIsActual && (key.APIKey == "" || strings.Contains(key.APIKey, "********")) {
+			key.APIKey = legacyAPIKey
+		}
+		if key.APIKey == "" {
+			continue
+		}
+		if key.ID == "" {
+			key.ID = bson.NewObjectID().Hex()
+		}
+		if _, ok := seen[key.ID]; ok {
+			key.ID = bson.NewObjectID().Hex()
+		}
+		seen[key.ID] = struct{}{}
+		if key.Name == "" {
+			key.Name = fmt.Sprintf("Key %d", i+1)
+		}
+		if key.Enabled == nil {
+			key.Enabled = boolPtr(true)
+		}
+		if key.Weight <= 0 {
+			key.Weight = 1
+		}
+		result = append(result, key)
+	}
+	return result
+}
+
+func primaryChannelAPIKey(keys []ChannelKey) string {
+	for _, key := range keys {
+		if key.IsEnabled() && strings.TrimSpace(key.APIKey) != "" {
+			return key.APIKey
+		}
+	}
+	if len(keys) > 0 {
+		return keys[0].APIKey
+	}
+	return ""
 }
 
 func normalizeModels(models []string, mappings map[string][]string) []string {
@@ -231,6 +346,10 @@ func firstModelMappings(mappings map[string][]string) map[string]string {
 		}
 	}
 	return result
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func maskAPIKey(key string) string {

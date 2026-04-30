@@ -4,12 +4,11 @@
 
 Hermes is a minimal AI API gateway for a single admin-controlled ToB/internal deployment.
 
-It aggregates configurable OpenAI-compatible upstream channels and exposes a unified OpenAI-compatible API. The first version focuses on OpenRouter free models and Volcengine Doubao Coding Plan, both configured from the admin frontend.
+It aggregates configurable OpenAI-compatible upstream channels and exposes a unified OpenAI-compatible API. Administrators configure upstream channels, API users, and per-user gateway tokens from the admin surface.
 
 ## Non-Goals
 
 - No public user registration
-- No per-user API token management
 - No billing or quota settlement
 - No rate limiting in the first version
 - No request log persistence in MongoDB in the first version
@@ -21,13 +20,14 @@ It aggregates configurable OpenAI-compatible upstream channels and exposes a uni
 Client
   -> /v1/* Gateway API
   -> Gin
+      -> MongoDB users/tokens
       -> MongoDB channels
       -> OpenAI-compatible upstream
 
 Admin Browser
   -> React frontend served by Gin
   -> /api/* Admin API
-  -> MongoDB channels
+  -> MongoDB channels/users/tokens
 ```
 
 ## Main Routes
@@ -49,6 +49,16 @@ Admin:
 - `PUT /api/channels/:id`
 - `DELETE /api/channels/:id`
 - `POST /api/channels/:id/test`
+- `GET /api/users`
+- `POST /api/users`
+- `GET /api/users/:id`
+- `PUT /api/users/:id`
+- `DELETE /api/users/:id`
+- `GET /api/users/:id/tokens`
+- `POST /api/users/:id/tokens`
+- `GET /api/users/:id/tokens/:token_id`
+- `PUT /api/users/:id/tokens/:token_id`
+- `DELETE /api/users/:id/tokens/:token_id`
 
 ## Channel Model
 
@@ -75,6 +85,56 @@ Admin:
 
 `models` are the external model names exposed by Hermes. `model_mappings` maps one external name to one or more upstream models inside the same channel. `model_mapping` is kept as a compatibility field and stores the first upstream model only.
 
+## User And Token Model
+
+Hermes follows New API's separation between users and API tokens, but keeps the backend smaller:
+
+- Admin login remains the existing config/JWT flow.
+- Users are API principals managed by admins, not self-service accounts.
+- Tokens authorize `/v1/*` traffic.
+- Full token keys are returned only once on creation. MongoDB stores a SHA-256 hash plus a preview string.
+- `GATEWAY_API_KEY` remains a legacy bypass when configured.
+
+User:
+
+```json
+{
+  "username": "team-a",
+  "display_name": "Team A",
+  "status": 1,
+  "group": "default",
+  "remark": "internal caller"
+}
+```
+
+Token:
+
+```json
+{
+  "name": "production",
+  "status": 1,
+  "expires_at": "2026-12-31T00:00:00Z",
+  "model_limits_enabled": true,
+  "model_limits": ["deepseek-v3"],
+  "allow_ips": ["10.0.0.0/8", "203.0.113.10"]
+}
+```
+
+Status values:
+
+- User: `1` enabled, `2` disabled
+- Token: `1` enabled, `2` disabled
+
+Token validation checks, in order:
+
+1. `Authorization: Bearer <token>` or `X-API-Key` or `?key=`.
+2. Legacy `GATEWAY_API_KEY` match, if configured.
+3. Token hash lookup.
+4. Token status and expiration.
+5. Optional IP allow-list.
+6. User status.
+7. Optional token model allow-list inside the relay handler.
+
 ## Provider Presets
 
 OpenRouter:
@@ -99,17 +159,18 @@ headers:
 
 ## Request Flow
 
-1. `/v1/chat/completions` checks `GATEWAY_API_KEY`.
+1. `/v1/chat/completions` checks the legacy `GATEWAY_API_KEY` first, then validates a user token.
 2. The handler reads the JSON body and extracts `model`.
-3. Identity guard detects model-probing requests and can return a fixed response without calling upstream.
-4. Identity guard injects a system prompt into normal chat requests.
-5. Enabled channel routes whose `models` contain the requested model are loaded from the in-memory channel cache. A route is `channel + external_model + upstream_model`.
-6. The in-memory barometer ranks candidates using metrics for the requested route.
-7. `model` is replaced with the selected upstream model from `model_mappings[model]`.
-8. The request is forwarded to `{base_url}/chat/completions`.
-9. JSON responses and SSE stream responses are sanitized and passed through to the client.
-10. Request results update the barometer using EWMA metrics.
-11. If an upstream fails before a response is committed, Hermes retries the next ranked channel.
+3. Token model limits are checked before routing.
+4. Identity guard detects model-probing requests and can return a fixed response without calling upstream.
+5. Identity guard injects a system prompt into normal chat requests.
+6. Enabled channel routes whose `models` contain the requested model are loaded from the in-memory channel cache. A route is `channel + external_model + upstream_model`.
+7. The in-memory barometer ranks candidates using metrics for the requested route.
+8. `model` is replaced with the selected upstream model from `model_mappings[model]`.
+9. The request is forwarded to `{base_url}/chat/completions`.
+10. JSON responses and SSE stream responses are sanitized and passed through to the client.
+11. Request results update the barometer using EWMA metrics.
+12. If an upstream fails before a response is committed, Hermes retries the next ranked channel.
 
 ## Identity Guard
 

@@ -44,7 +44,7 @@ func main() {
 	authService := auth.New(cfg)
 	adminHandler := api.NewAdminHandler(db, channelCache, authService, provider, meter)
 	relayHandler := relay.NewHandler(channelCache, provider, meter, guard)
-	router := server.NewRouter(cfg, authService, adminHandler, relayHandler)
+	router := server.NewRouter(cfg, authService, adminHandler, relayHandler, db)
 
 	log.Printf("hermes listening on :%s", cfg.Port)
 	if err := router.Run(":" + cfg.Port); err != nil {

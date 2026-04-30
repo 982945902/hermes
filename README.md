@@ -6,11 +6,12 @@ It provides:
 
 - OpenAI-compatible `/v1/models` and `/v1/chat/completions`
 - Admin login and channel management UI
+- Admin-managed API users and gateway tokens
 - MongoDB-backed channel configuration
 - OpenAI-compatible upstream proxying for OpenRouter, Doubao Coding Plan, and custom providers
 - Normal JSON and SSE streaming passthrough
 
-It intentionally does not include user management, billing, per-user tokens, rate limiting, or request log persistence in the first version.
+It intentionally does not include public user registration, billing, rate limiting, or request log persistence in the first version.
 
 ## Quick Start
 

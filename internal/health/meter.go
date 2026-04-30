@@ -3,6 +3,7 @@ package health
 import (
 	"math"
 	"math/rand"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -26,12 +27,17 @@ const (
 	probeProbability   = 0.08
 	unavailableFailN   = 3
 	unavailableSuccess = 0.35
+	keyRateCooldown    = 90 * time.Second
+	keyAuthCooldown    = 10 * time.Minute
+	keyFailureCooldown = 30 * time.Second
+	keyFailureN        = 3
 )
 
 type Meter struct {
-	mu    sync.RWMutex
-	stats map[string]*ModelStats
-	rand  *rand.Rand
+	mu       sync.RWMutex
+	stats    map[string]*ModelStats
+	keyStats map[string]*KeyStats
+	rand     *rand.Rand
 }
 
 type ChannelSnapshot struct {
@@ -65,16 +71,42 @@ type ModelStats struct {
 	LastProbeAt         time.Time `json:"last_probe_at,omitempty"`
 }
 
+type KeyStatus string
+
+const (
+	KeyStatusAvailable   KeyStatus = "available"
+	KeyStatusCoolingDown KeyStatus = "cooling_down"
+	KeyStatusUnavailable KeyStatus = "unavailable"
+)
+
+type KeyStats struct {
+	ChannelID           string    `json:"channel_id"`
+	KeyID               string    `json:"key_id"`
+	Name                string    `json:"name"`
+	Requests            int64     `json:"requests"`
+	SuccessEWMA         float64   `json:"success_rate"`
+	LatencyEWMA         float64   `json:"latency_ms"`
+	Score               float64   `json:"score"`
+	Status              KeyStatus `json:"status"`
+	CooldownUntil       time.Time `json:"cooldown_until,omitempty"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	LastStatusCode      int       `json:"last_status_code"`
+	LastError           string    `json:"last_error,omitempty"`
+	LastUpdatedAt       time.Time `json:"last_updated_at,omitempty"`
+}
+
 type Snapshot struct {
 	GeneratedAt time.Time               `json:"generated_at"`
 	Channels    []ChannelSnapshot       `json:"channels"`
 	Models      []ExternalModelSnapshot `json:"models"`
+	Keys        []KeyStats              `json:"keys"`
 }
 
 func NewMeter() *Meter {
 	return &Meter{
-		stats: map[string]*ModelStats{},
-		rand:  rand.New(rand.NewSource(time.Now().UnixNano())),
+		stats:    map[string]*ModelStats{},
+		keyStats: map[string]*KeyStats{},
+		rand:     rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -129,6 +161,7 @@ func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 	defer m.mu.RUnlock()
 
 	activeRoute := map[string]model.Channel{}
+	activeKey := map[string]struct{}{}
 	filterRoutes := len(activeChannels) > 0
 	if filterRoutes {
 		for _, channel := range activeChannels[0] {
@@ -136,6 +169,9 @@ func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 			for _, route := range channel.Routes() {
 				key := metricKey(route.Channel.ID.Hex(), route.ExternalModel, route.UpstreamModel)
 				activeRoute[key] = route.Channel
+			}
+			for _, key := range channel.ActiveKeys() {
+				activeKey[keyMetricKey(channel.ID.Hex(), key.ID)] = struct{}{}
 			}
 		}
 	}
@@ -222,7 +258,29 @@ func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 		}
 		return models[i].ExternalModel < models[j].ExternalModel
 	})
-	return Snapshot{GeneratedAt: time.Now(), Channels: channels, Models: models}
+
+	keys := make([]KeyStats, 0, len(m.keyStats))
+	for key, stat := range m.keyStats {
+		if filterRoutes {
+			if _, ok := activeKey[key]; !ok {
+				continue
+			}
+		}
+		keys = append(keys, *stat)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Status != keys[j].Status {
+			return keyStatusRank(keys[i].Status) < keyStatusRank(keys[j].Status)
+		}
+		if keys[i].Score != keys[j].Score {
+			return keys[i].Score > keys[j].Score
+		}
+		if keys[i].ChannelID != keys[j].ChannelID {
+			return keys[i].ChannelID < keys[j].ChannelID
+		}
+		return keys[i].KeyID < keys[j].KeyID
+	})
+	return Snapshot{GeneratedAt: time.Now(), Channels: channels, Models: models, Keys: keys}
 }
 
 func (m *Meter) Rank(routes []model.ChannelRoute) []model.ChannelRoute {
@@ -266,6 +324,95 @@ func (m *Meter) Rank(routes []model.ChannelRoute) []model.ChannelRoute {
 		ranked[i] = candidate.route
 	}
 	return ranked
+}
+
+func (m *Meter) SelectKey(channel model.Channel) (model.ChannelKey, bool) {
+	keys := channel.ActiveKeys()
+	if len(keys) == 0 {
+		return model.ChannelKey{}, false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	type candidate struct {
+		key   model.ChannelKey
+		value float64
+	}
+	candidates := make([]candidate, 0, len(keys))
+	for _, key := range keys {
+		stat := m.ensureKeyLocked(channel, key)
+		if stat.CooldownUntil.After(now) {
+			continue
+		}
+		score := stat.Score
+		if stat.Requests == 0 {
+			score = 0.78
+		}
+		sigma := 0.05
+		if stat.Requests == 0 {
+			sigma = 0.18
+		} else if stat.Status == KeyStatusCoolingDown {
+			sigma = 0.12
+			score *= 0.75
+		}
+		weight := float64(key.Weight)
+		if weight <= 0 {
+			weight = 1
+		}
+		sampled := score + m.rand.NormFloat64()*sigma
+		value := sampled*math.Sqrt(weight) + float64(key.Priority)*0.02
+		candidates = append(candidates, candidate{key: key, value: value})
+	}
+	if len(candidates) == 0 {
+		return model.ChannelKey{}, false
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].value > candidates[j].value
+	})
+	return candidates[0].key, true
+}
+
+func (m *Meter) RecordKey(channel model.Channel, key model.ChannelKey, latency time.Duration, statusCode int, success bool, errText string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	stat := m.ensureKeyLocked(channel, key)
+	latencyMS := float64(latency.Milliseconds())
+	successValue := 0.0
+	if success {
+		successValue = 1.0
+	}
+	if stat.Requests == 0 {
+		stat.SuccessEWMA = successValue
+		stat.LatencyEWMA = latencyMS
+	} else {
+		stat.SuccessEWMA = ewma(stat.SuccessEWMA, successValue)
+		stat.LatencyEWMA = ewma(stat.LatencyEWMA, latencyMS)
+	}
+	stat.Requests++
+	stat.LastStatusCode = statusCode
+	stat.LastError = errText
+	stat.LastUpdatedAt = time.Now()
+	if success {
+		stat.ConsecutiveFailures = 0
+		stat.CooldownUntil = time.Time{}
+		stat.Status = KeyStatusAvailable
+	} else {
+		stat.ConsecutiveFailures++
+		stat.Status = KeyStatusCoolingDown
+		switch {
+		case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
+			stat.Status = KeyStatusUnavailable
+			stat.CooldownUntil = time.Now().Add(keyAuthCooldown)
+		case statusCode == http.StatusTooManyRequests:
+			stat.CooldownUntil = time.Now().Add(keyRateCooldown)
+		case stat.ConsecutiveFailures >= keyFailureN:
+			stat.CooldownUntil = time.Now().Add(keyFailureCooldown)
+		}
+	}
+	stat.Score = computeKeyScore(stat)
 }
 
 func (m *Meter) ProbeCandidates(routes []model.ChannelRoute, selectedKey string) []model.ChannelRoute {
@@ -322,6 +469,28 @@ func metricKey(channelID string, externalModel string, upstreamModel string) str
 	return strings.Join([]string{channelID, externalModel, upstreamModel}, "\x00")
 }
 
+func (m *Meter) ensureKeyLocked(channel model.Channel, key model.ChannelKey) *KeyStats {
+	id := keyMetricKey(channel.ID.Hex(), key.ID)
+	if stat, ok := m.keyStats[id]; ok {
+		stat.Name = key.Name
+		return stat
+	}
+	stat := &KeyStats{
+		ChannelID:   channel.ID.Hex(),
+		KeyID:       key.ID,
+		Name:        key.Name,
+		SuccessEWMA: 1,
+		Score:       0.78,
+		Status:      KeyStatusAvailable,
+	}
+	m.keyStats[id] = stat
+	return stat
+}
+
+func keyMetricKey(channelID string, keyID string) string {
+	return strings.Join([]string{channelID, keyID}, "\x00")
+}
+
 func channelTier(channel ChannelSnapshot) Tier {
 	result := TierUnavailable
 	for _, stat := range channel.Models {
@@ -370,6 +539,14 @@ func computeScore(stat *ModelStats) float64 {
 	return clamp01(latencyScore*0.35 + stat.SuccessEWMA*0.40 + stat.QualityEWMA*0.25)
 }
 
+func computeKeyScore(stat *KeyStats) float64 {
+	latencyScore := 0.72
+	if stat.LatencyEWMA > 0 {
+		latencyScore = math.Exp(-stat.LatencyEWMA / targetLatencyMS)
+	}
+	return clamp01(latencyScore*0.20 + stat.SuccessEWMA*0.80)
+}
+
 func computeTier(stat *ModelStats) Tier {
 	if stat.ConsecutiveFailures >= unavailableFailN || stat.SuccessEWMA < unavailableSuccess {
 		return TierUnavailable
@@ -385,6 +562,17 @@ func tierRank(tier Tier) int {
 	case TierExcellent:
 		return 0
 	case TierUnstable:
+		return 1
+	default:
+		return 2
+	}
+}
+
+func keyStatusRank(status KeyStatus) int {
+	switch status {
+	case KeyStatusAvailable:
+		return 0
+	case KeyStatusCoolingDown:
 		return 1
 	default:
 		return 2

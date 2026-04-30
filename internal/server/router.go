@@ -13,17 +13,18 @@ import (
 	"github.com/982945902/hermes/internal/config"
 	"github.com/982945902/hermes/internal/frontend"
 	"github.com/982945902/hermes/internal/relay"
+	"github.com/982945902/hermes/internal/store"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
-func NewRouter(config config.Config, authService *auth.Service, admin *api.AdminHandler, relayHandler *relay.Handler) *gin.Engine {
+func NewRouter(config config.Config, authService *auth.Service, admin *api.AdminHandler, relayHandler *relay.Handler, gatewayStore *store.Store) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-API-Key"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: false,
 	}))
@@ -44,11 +45,21 @@ func NewRouter(config config.Config, authService *auth.Service, admin *api.Admin
 			protected.DELETE("/channels/:id", admin.DeleteChannel)
 			protected.POST("/channels/:id/test", admin.TestChannel)
 			protected.POST("/channels/fetch-models", admin.FetchModels)
+			protected.GET("/users", admin.ListUsers)
+			protected.POST("/users", admin.CreateUser)
+			protected.GET("/users/:id", admin.GetUser)
+			protected.PUT("/users/:id", admin.UpdateUser)
+			protected.DELETE("/users/:id", admin.DeleteUser)
+			protected.GET("/users/:id/tokens", admin.ListUserTokens)
+			protected.POST("/users/:id/tokens", admin.CreateUserToken)
+			protected.GET("/users/:id/tokens/:token_id", admin.GetUserToken)
+			protected.PUT("/users/:id/tokens/:token_id", admin.UpdateUserToken)
+			protected.DELETE("/users/:id/tokens/:token_id", admin.DeleteUserToken)
 		}
 	}
 
 	v1 := r.Group("/v1")
-	v1.Use(auth.GatewayMiddleware(config.GatewayAPIKey))
+	v1.Use(auth.GatewayMiddleware(config.GatewayAPIKey, gatewayStore))
 	{
 		v1.GET("/models", relayHandler.ListModels)
 		v1.POST("/chat/completions", relayHandler.ChatCompletions)

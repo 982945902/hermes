@@ -4,6 +4,7 @@ export type Channel = {
   provider: 'openrouter' | 'doubao_coding' | 'custom' | string
   base_url: string
   api_key?: string
+  keys?: ChannelKey[]
   models: string[]
   model_mapping: Record<string, string>
   model_mappings?: Record<string, string[]>
@@ -16,6 +17,15 @@ export type Channel = {
   last_test_at?: string
   created_at?: string
   updated_at?: string
+}
+
+export type ChannelKey = {
+  id?: string
+  name: string
+  api_key?: string
+  enabled?: boolean
+  priority?: number
+  weight?: number
 }
 
 export type BarometerModel = {
@@ -53,4 +63,32 @@ export type BarometerSnapshot = {
   generated_at: string
   channels: BarometerChannel[]
   models?: BarometerExternalModel[]
+}
+
+export type ApiUser = {
+  id?: string
+  username: string
+  display_name: string
+  status: 1 | 2
+  group: string
+  remark?: string
+  request_count?: number
+  created_at?: string
+  updated_at?: string
+}
+
+export type UserToken = {
+  id?: string
+  user_id?: string
+  name: string
+  key_preview?: string
+  status: 1 | 2
+  expires_at?: string
+  last_used_at?: string
+  model_limits_enabled: boolean
+  model_limits: string[]
+  allow_ips: string[]
+  request_count?: number
+  created_at?: string
+  updated_at?: string
 }

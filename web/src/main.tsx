@@ -1,22 +1,30 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { Activity, LogOut, Plus, RefreshCw, Save, Settings, Trash2 } from 'lucide-react'
+import { Activity, Copy, KeyRound, LogOut, Plus, RefreshCw, Save, Settings, Trash2, UserPlus } from 'lucide-react'
 import {
   barometer,
   clearToken,
   createChannel,
+  createUser,
+  createUserToken,
   deleteChannel,
+  deleteUser,
+  deleteUserToken,
   fetchUpstreamModels,
   getToken,
   listChannels,
+  listUserTokens,
+  listUsers,
   login,
   me,
   setToken,
   status,
   testChannel,
   updateChannel,
+  updateUser,
+  updateUserToken,
 } from './api'
-import type { BarometerChannel, BarometerExternalModel, BarometerModel, Channel } from './types'
+import type { ApiUser, BarometerChannel, BarometerExternalModel, BarometerModel, Channel, ChannelKey, UserToken } from './types'
 import './styles.css'
 
 const presets = {
@@ -43,6 +51,7 @@ function emptyChannel(): Channel {
     provider: 'openrouter',
     base_url: presets.openrouter.base_url,
     api_key: '',
+    keys: [emptyChannelKey(1)],
     models: [],
     model_mapping: {},
     model_mappings: {},
@@ -54,7 +63,45 @@ function emptyChannel(): Channel {
   }
 }
 
+function emptyUser(): ApiUser {
+  return {
+    username: '',
+    display_name: '',
+    status: 1,
+    group: 'default',
+    remark: '',
+  }
+}
+
+function emptyUserToken(): UserToken {
+  return {
+    name: '',
+    status: 1,
+    model_limits_enabled: false,
+    model_limits: [],
+    allow_ips: [],
+  }
+}
+
 const routeSeparator = '\u0000'
+
+function emptyChannelKey(index: number): ChannelKey {
+  return {
+    id: newLocalID(),
+    name: index === 1 ? '默认 Key' : `Key ${index}`,
+    api_key: '',
+    enabled: true,
+    priority: 0,
+    weight: 1,
+  }
+}
+
+function newLocalID() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return `key-${crypto.randomUUID()}`
+  }
+  return `key-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
 
 function upstreamsFor(channel: Channel, externalModel: string) {
   const multi = channel.model_mappings?.[externalModel]?.filter(Boolean)
@@ -76,6 +123,42 @@ function routeValue(externalModel: string, upstreamModel: string) {
 function parseRouteValue(value: string) {
   const [externalModel = '', upstreamModel = ''] = value.split(routeSeparator)
   return { externalModel, upstreamModel }
+}
+
+function channelKeys(channel: Channel): ChannelKey[] {
+  if (channel.keys && channel.keys.length > 0) return channel.keys
+  if (channel.api_key) {
+    return [
+      {
+        id: 'default',
+        name: '默认 Key',
+        api_key: channel.api_key,
+        enabled: true,
+        priority: 0,
+        weight: 1,
+      },
+    ]
+  }
+  return []
+}
+
+function isMaskedSecret(value?: string) {
+  return Boolean(value && value.includes('********'))
+}
+
+function canUseChannelKey(key: ChannelKey) {
+  return key.enabled !== false && Boolean((key.api_key || '').trim())
+}
+
+function firstUsableAPIKey(channel: Channel) {
+  const keys = channelKeys(channel)
+  const usableKey = keys.find(canUseChannelKey)?.api_key || ''
+  if (usableKey || (channel.keys && channel.keys.length > 0)) return usableKey
+  return channel.api_key || ''
+}
+
+function hasAnyChannelKey(channel: Channel) {
+  return Boolean(firstUsableAPIKey(channel))
 }
 
 function App() {
@@ -158,21 +241,63 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
   )
 }
 
+type PageKey = 'channels' | 'users' | 'settings'
+
+const pageCopy: Record<PageKey, { title: string; description: string }> = {
+  channels: {
+    title: '渠道管理',
+    description: '配置上游渠道、模型映射，并让晴雨表动态选择最合适的线路。',
+  },
+  users: {
+    title: '用户管理',
+    description: '管理 API 调用方、授权 token、模型白名单和访问限制。',
+  },
+  settings: {
+    title: '系统设置',
+    description: '查看服务状态和运行配置。',
+  },
+}
+
+function pageFromHash(hash: string): PageKey {
+  const value = hash.replace(/^#/, '')
+  if (value === 'users' || value === 'settings') return value
+  return 'channels'
+}
+
 function Shell({ username, onLogout }: { username: string; onLogout: () => void }) {
+  const [page, setPage] = React.useState<PageKey>(() => pageFromHash(window.location.hash))
+
+  React.useEffect(() => {
+    if (!window.location.hash) {
+      window.history.replaceState(null, '', '#channels')
+    }
+    const onHashChange = () => setPage(pageFromHash(window.location.hash))
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  const copy = pageCopy[page]
   return (
     <div className="app">
       <aside>
         <div className="brand">Hermes</div>
         <nav>
-          <a href="#channels">渠道</a>
-          <a href="#settings">设置</a>
+          <a className={page === 'channels' ? 'active' : ''} href="#channels">
+            渠道
+          </a>
+          <a className={page === 'users' ? 'active' : ''} href="#users">
+            用户
+          </a>
+          <a className={page === 'settings' ? 'active' : ''} href="#settings">
+            设置
+          </a>
         </nav>
       </aside>
       <main>
         <header>
           <div>
-            <h1>渠道管理</h1>
-            <p>配置上游渠道、模型映射，并让晴雨表动态选择最合适的线路。</p>
+            <h1>{copy.title}</h1>
+            <p>{copy.description}</p>
           </div>
           <div className="user">
             <span>{username || 'admin'}</span>
@@ -181,9 +306,9 @@ function Shell({ username, onLogout }: { username: string; onLogout: () => void 
             </button>
           </div>
         </header>
-        <Barometer />
-        <Channels />
-        <SettingsPanel />
+        {page === 'channels' ? <Channels /> : null}
+        {page === 'users' ? <Users /> : null}
+        {page === 'settings' ? <SettingsPanel /> : null}
       </main>
     </div>
   )
@@ -199,7 +324,7 @@ function Barometer() {
       try {
         const data = await barometer()
         if (!mounted) return
-        setModels(data.models && data.models.length > 0 ? data.models : groupBarometerByExternalModel(data.channels))
+        setModels(normalizeBarometerGroups(data))
         setUpdatedAt(data.generated_at)
       } catch {
         if (mounted) setModels([])
@@ -223,26 +348,38 @@ function Barometer() {
         {models.length === 0 ? (
           <p className="muted">请求或渠道测试后会显示实时指标。</p>
         ) : (
-          models.map((model) => <BarometerCard key={model.external_model} model={model} />)
+          models.map((model) => <BarometerGroup key={model.external_model} model={model} />)
         )}
       </div>
     </section>
   )
 }
 
-function groupBarometerByExternalModel(channels: BarometerChannel[]): BarometerExternalModel[] {
+function normalizeBarometerGroups(data: { models?: BarometerExternalModel[]; channels: BarometerChannel[] }) {
+  const routes =
+    data.models && data.models.length > 0
+      ? data.models.flatMap((model) =>
+          model.routes.map((route) => ({
+            ...route,
+            external_model: route.external_model || model.external_model,
+          })),
+        )
+      : data.channels.flatMap((channel) => channel.models)
+  return groupBarometerRoutes(routes)
+}
+
+function groupBarometerRoutes(routes: BarometerModel[]): BarometerExternalModel[] {
   const grouped = new Map<string, BarometerModel[]>()
-  for (const channel of channels) {
-    for (const route of channel.models) {
-      grouped.set(route.external_model, [...(grouped.get(route.external_model) || []), route])
-    }
+  for (const route of routes) {
+    const externalModel = route.external_model || '未命名模型'
+    grouped.set(externalModel, [...(grouped.get(externalModel) || []), { ...route, external_model: externalModel }])
   }
   return Array.from(grouped.entries())
-    .map(([external_model, routes]) => ({
+    .map(([external_model, items]) => ({
       external_model,
-      routes: routes.sort((left, right) => routeSortValue(left) - routeSortValue(right)),
+      routes: items.sort((left, right) => routeSortValue(left) - routeSortValue(right)),
     }))
-    .sort((left, right) => routeSortValue(left.routes[0]) - routeSortValue(right.routes[0]))
+    .sort((left, right) => left.external_model.localeCompare(right.external_model))
 }
 
 function routeSortValue(route?: BarometerModel) {
@@ -250,23 +387,23 @@ function routeSortValue(route?: BarometerModel) {
   return tierRank(route.tier) * 100 - route.score
 }
 
-function BarometerCard({ model }: { model: BarometerExternalModel }) {
+function BarometerGroup({ model }: { model: BarometerExternalModel }) {
   const bestTier = model.routes.reduce<BarometerModel['tier'] | undefined>((tier, item) => {
     if (!tier) return item.tier
     return tierRank(item.tier) < tierRank(tier) ? item.tier : tier
   }, undefined)
   return (
-    <div className={`barometer-card ${bestTier || 'excellent'}`}>
+    <div className={`barometer-group ${bestTier || 'excellent'}`}>
       <div className="barometer-head">
         <div>
           <strong>{model.external_model}</strong>
-          <span>对外模型路由池</span>
+          <span>对外模型</span>
         </div>
         <b>{model.routes.length} 条路由</b>
       </div>
       <div className="barometer-models">
         {model.routes.map((item) => (
-          <BarometerModelRow key={`${item.channel_id}-${item.upstream_model}`} item={item} />
+          <BarometerModelRow key={`${item.channel_id}-${item.external_model}-${item.upstream_model}`} item={item} />
         ))}
       </div>
     </div>
@@ -322,6 +459,7 @@ function Channels() {
   const [message, setMessage] = React.useState('')
   const [testPrompt, setTestPrompt] = React.useState('请用一句话回复：Hermes channel test ok')
   const [testModel, setTestModel] = React.useState('')
+  const [testKey, setTestKey] = React.useState('')
   const [testMessages, setTestMessages] = React.useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
 
   async function load(selectChannelId?: string, selectFirst = false) {
@@ -354,7 +492,7 @@ function Channels() {
     }
   }
 
-  async function runTest(channel: Channel) {
+  async function runTest(channel: Channel, keyID = '') {
     if (!channel.id) return
     const routes = modelRoutes(channel)
     const selectedRoute = parseRouteValue(testModel)
@@ -368,7 +506,7 @@ function Channels() {
     setMessage(`正在测试 ${channel.name}`)
     setTestMessages((items) => [...items, { role: 'user', content: testPrompt }])
     try {
-      const result = await testChannel(channel.id, modelName, upstreamModel, testPrompt)
+      const result = await testChannel(channel.id, modelName, upstreamModel, testPrompt, keyID || undefined)
       setMessage(`${channel.name} 测试成功`)
       setTestMessages((items) => [...items, { role: 'assistant', content: result.response || '(empty response)' }])
       await load()
@@ -379,76 +517,112 @@ function Channels() {
   }
 
   return (
-    <section id="channels" className="section-grid">
-      <div className="panel">
-        <div className="panel-title">
-          <h2>渠道池</h2>
-          <button
-            className="icon-button"
-            onClick={() => {
-              setEditing(emptyChannel())
-              setTestMessages([])
-              setMessage('正在新建渠道')
-            }}
-            title="新建渠道"
-          >
-            <Plus size={18} />
-          </button>
-        </div>
-        <div className="table">
-          {channels.map((channel) => (
-            <div className="row" key={channel.id}>
-              <div>
-                <strong>{channel.name}</strong>
-                <span>{channel.provider}</span>
-              </div>
-              <div>{channel.models.length} 个模型</div>
-              <div className={channel.enabled ? 'ok' : 'muted'}>{channel.enabled ? '启用' : '停用'}</div>
-              <div className="actions">
-                <button
-                  className="icon-button"
-                  onClick={() => {
+    <section id="channels" className="channels-section">
+      <Barometer />
+      <div className="section-grid">
+        <div className="panel">
+          <div className="panel-title">
+            <h2>渠道池</h2>
+            <button
+              className="icon-button"
+              onClick={() => {
+                setEditing(emptyChannel())
+                setTestKey('')
+                setTestMessages([])
+                setMessage('正在新建渠道')
+              }}
+              title="新建渠道"
+            >
+              <Plus size={18} />
+            </button>
+          </div>
+          <div className="table">
+            {channels.map((channel) => (
+              <div
+                className="row clickable-row"
+                key={channel.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  setEditing(channel)
+                  setTestKey('')
+                  setTestMessages([])
+                  setMessage(`正在编辑 ${channel.name}`)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
                     setEditing(channel)
+                    setTestKey('')
                     setTestMessages([])
                     setMessage(`正在编辑 ${channel.name}`)
-                  }}
-                  title="编辑"
-                >
-                  <Settings size={17} />
-                </button>
-                <button className="icon-button" onClick={() => runTest(channel)} title="测试">
-                  <Activity size={17} />
-                </button>
-                <button
-                  className="icon-button danger"
-                  onClick={async () => {
-                    if (channel.id) {
-                      await deleteChannel(channel.id)
-                      await load(undefined, true)
-                    }
-                  }}
-                  title="删除"
-                >
-                  <Trash2 size={17} />
-                </button>
+                  }
+                }}
+              >
+                <div>
+                  <strong>{channel.name}</strong>
+                  <span>{channel.provider}</span>
+                </div>
+                <div>{channel.models.length} 个模型</div>
+                <div className={channel.enabled ? 'ok' : 'muted'}>{channel.enabled ? '启用' : '停用'}</div>
+                <div className="actions">
+                  <button
+                    className="icon-button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setEditing(channel)
+                      setTestKey('')
+                      setTestMessages([])
+                      setMessage(`正在编辑 ${channel.name}`)
+                    }}
+                    title="编辑"
+                  >
+                    <Settings size={17} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      runTest(channel)
+                    }}
+                    title="测试"
+                  >
+                    <Activity size={17} />
+                  </button>
+                  <button
+                    className="icon-button danger"
+                    onClick={async (e) => {
+                      e.stopPropagation()
+                      if (channel.id) {
+                        await deleteChannel(channel.id)
+                        await load(undefined, true)
+                      }
+                    }}
+                    title="删除"
+                  >
+                    <Trash2 size={17} />
+                  </button>
+                </div>
+                {channel.last_error ? <p className="row-error">{channel.last_error}</p> : null}
               </div>
-              {channel.last_error ? <p className="row-error">{channel.last_error}</p> : null}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
+        <Editor
+          channel={editing}
+          setChannel={setEditing}
+          onSave={save}
+          message={message}
+          testPrompt={testPrompt}
+          setTestPrompt={setTestPrompt}
+          testModel={testModel}
+          setTestModel={setTestModel}
+          testKey={testKey}
+          setTestKey={setTestKey}
+          testMessages={testMessages}
+          onRunTest={() => runTest(editing, testKey)}
+        />
       </div>
-      <Editor
-        channel={editing}
-        setChannel={setEditing}
-        onSave={save}
-        message={message}
-        testPrompt={testPrompt}
-        setTestPrompt={setTestPrompt}
-        testModel={testModel}
-        setTestModel={setTestModel}
-        testMessages={testMessages}
-        onRunTest={() => runTest(editing)}
-      />
     </section>
   )
 }
@@ -462,6 +636,8 @@ function Editor({
   setTestPrompt,
   testModel,
   setTestModel,
+  testKey,
+  setTestKey,
   testMessages,
   onRunTest,
 }: {
@@ -473,6 +649,8 @@ function Editor({
   setTestPrompt: (value: string) => void
   testModel: string
   setTestModel: (value: string) => void
+  testKey: string
+  setTestKey: (value: string) => void
   testMessages: Array<{ role: 'user' | 'assistant'; content: string }>
   onRunTest: () => void
 }) {
@@ -513,6 +691,29 @@ function Editor({
     setChannel((current) => ({ ...current, ...update }))
   }
 
+  function updateChannelKey(index: number, update: Partial<ChannelKey>) {
+    setChannel((current) => {
+      const nextKeys = ensureEditableKeys(current).map((key, itemIndex) =>
+        itemIndex === index ? { ...key, ...update } : key,
+      )
+      return applyChannelKeys(current, nextKeys)
+    })
+  }
+
+  function addChannelKey() {
+    setChannel((current) => {
+      const currentKeys = ensureEditableKeys(current)
+      return applyChannelKeys(current, [...currentKeys, emptyChannelKey(currentKeys.length + 1)])
+    })
+  }
+
+  function removeChannelKey(index: number) {
+    setChannel((current) => {
+      const nextKeys = ensureEditableKeys(current).filter((_, itemIndex) => itemIndex !== index)
+      return applyChannelKeys(current, nextKeys.length > 0 ? nextKeys : [emptyChannelKey(1)])
+    })
+  }
+
   React.useEffect(() => {
     const routes = modelRoutes(channel)
     if (!routes.length) return
@@ -522,6 +723,13 @@ function Editor({
     }
   }, [channel.models, channel.model_mapping, channel.model_mappings, testModel, setTestModel])
 
+  React.useEffect(() => {
+    if (!testKey) return
+    if (!channelKeys(channel).some((key) => key.id === testKey)) {
+      setTestKey('')
+    }
+  }, [channel.id, channel.keys, testKey, setTestKey])
+
   function applyProvider(provider: string) {
     const preset = presets[provider as keyof typeof presets] || presets.custom
     patch({ provider, base_url: preset.base_url, extra_headers: preset.extra_headers })
@@ -529,13 +737,18 @@ function Editor({
 
   async function loadModels() {
     setModelError('')
+    if (!hasAnyChannelKey(channel)) {
+      setModelError('请先填写至少一个可用 Key')
+      return
+    }
     setFetching(true)
     try {
       const result = await fetchUpstreamModels({
         id: channel.id,
         provider: channel.provider,
         base_url: channel.base_url,
-        api_key: channel.api_key,
+        api_key: firstUsableAPIKey(channel),
+        keys: normalizeChannelKeys(channel),
         extra_headers: channel.extra_headers || {},
       })
       setUpstreamModels(result.data)
@@ -631,17 +844,58 @@ function Editor({
         Base URL
         <input value={channel.base_url} onChange={(e) => patch({ base_url: e.target.value })} />
       </label>
-      <label>
-        API Key
-        <input value={channel.api_key || ''} onChange={(e) => patch({ api_key: e.target.value })} />
-      </label>
+      <div className="key-pool">
+        <div className="key-pool-head">
+          <div>
+            <h3>Key 池</h3>
+            <p>同一个渠道可配置多个 Key，请求时后端会自动选择可用 Key。</p>
+          </div>
+          <button onClick={addChannelKey}>
+            <Plus size={17} />
+            添加 Key
+          </button>
+        </div>
+        <div className="key-list">
+          {ensureEditableKeys(channel).map((key, index) => (
+            <div className="key-row" key={key.id || index}>
+              <label>
+                名称
+                <input
+                  value={key.name}
+                  onChange={(e) => updateChannelKey(index, { name: e.target.value })}
+                  placeholder={index === 0 ? '默认 Key' : `Key ${index + 1}`}
+                />
+              </label>
+              <label>
+                API Key
+                <input
+                  value={key.api_key || ''}
+                  onChange={(e) => updateChannelKey(index, { api_key: e.target.value })}
+                  placeholder={isMaskedSecret(key.api_key) ? key.api_key : 'sk-...'}
+                />
+              </label>
+              <label className="check key-enabled">
+                <input
+                  type="checkbox"
+                  checked={key.enabled !== false}
+                  onChange={(e) => updateChannelKey(index, { enabled: e.target.checked })}
+                />
+                启用
+              </label>
+              <button className="icon-button danger" onClick={() => removeChannelKey(index)} title="删除 Key">
+                <Trash2 size={17} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
       <div className="model-picker">
         <div className="model-toolbar">
           <div>
             <h3>模型映射</h3>
             <p>左侧是上游真实模型；勾选后在右侧填写对外模型名称，保存后按“对外模型 → 上游模型”转发。</p>
           </div>
-          <button onClick={loadModels} disabled={fetching || !channel.base_url || !channel.api_key}>
+          <button onClick={loadModels} disabled={fetching || !channel.base_url || !hasAnyChannelKey(channel)}>
             <RefreshCw size={17} />
             {fetching ? '拉取中' : '拉取模型'}
           </button>
@@ -650,7 +904,7 @@ function Editor({
         {modelError ? <p className="error">{modelError}</p> : null}
         <div className="model-list">
           {availableModels.length === 0 ? (
-            <p className="muted">填写 URL 和 Key 后点击拉取模型。默认不启用，需要手动勾选。</p>
+            <p className="muted">填写 URL 和至少一个启用 Key 后点击拉取模型。默认不启用，需要手动勾选。</p>
           ) : (
             availableModels.map((upstreamModel) => {
               const checked = Boolean(findExternalModel(upstreamModel))
@@ -708,10 +962,21 @@ function Editor({
           </select>
         </label>
         <label>
+          测试 Key
+          <select value={testKey} onChange={(e) => setTestKey(e.target.value)}>
+            <option value="">自动选择可用 Key</option>
+            {channelKeys(channel).map((key, index) => (
+              <option key={key.id || index} value={key.id || ''} disabled={key.enabled === false}>
+                {key.name || `Key ${index + 1}`}{key.enabled === false ? '（停用）' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
           用户消息
           <textarea value={testPrompt} onChange={(e) => setTestPrompt(e.target.value)} />
         </label>
-        <button className="primary" onClick={onRunTest} disabled={!channel.id || channel.models.length === 0}>
+        <button className="primary" onClick={onRunTest} disabled={!channel.id || channel.models.length === 0 || !hasAnyChannelKey(channel)}>
           <Activity size={17} />
           发送测试
         </button>
@@ -729,6 +994,329 @@ function Editor({
         </div>
       </div>
     </div>
+  )
+}
+
+function Users() {
+  const [users, setUsers] = React.useState<ApiUser[]>([])
+  const [tokens, setTokens] = React.useState<UserToken[]>([])
+  const [editingUser, setEditingUser] = React.useState<ApiUser>(emptyUser())
+  const [editingToken, setEditingToken] = React.useState<UserToken>(emptyUserToken())
+  const [availableModels, setAvailableModels] = React.useState<string[]>([])
+  const [generatedKey, setGeneratedKey] = React.useState('')
+  const [message, setMessage] = React.useState('')
+
+  async function load(selectUserId?: string, selectFirst = false) {
+    const [userResult, channelResult] = await Promise.all([listUsers(), listChannels()])
+    const nextUsers = userResult.data || []
+    setUsers(nextUsers)
+    setAvailableModels(uniqueModels(channelResult.data))
+    const selected = selectUserId ? nextUsers.find((item) => item.id === selectUserId) : undefined
+    if (selected) {
+      setEditingUser(selected)
+      await loadTokens(selected.id)
+      return
+    }
+    if (selectFirst && nextUsers[0]?.id) {
+      setEditingUser(nextUsers[0])
+      await loadTokens(nextUsers[0].id)
+      return
+    }
+    if (nextUsers.length === 0) {
+      setEditingUser(emptyUser())
+      setTokens([])
+      setEditingToken(emptyUserToken())
+    }
+  }
+
+  async function loadTokens(userId?: string) {
+    if (!userId) {
+      setTokens([])
+      return
+    }
+    const data = await listUserTokens(userId)
+    setTokens(data.data || [])
+    setEditingToken(data.data?.[0] || emptyUserToken())
+  }
+
+  React.useEffect(() => {
+    load(undefined, true).catch((err) => setMessage(err.message))
+  }, [])
+
+  function patchUser(update: Partial<ApiUser>) {
+    setEditingUser((current) => ({ ...current, ...update }))
+  }
+
+  function patchToken(update: Partial<UserToken>) {
+    setEditingToken((current) => ({ ...current, ...update }))
+  }
+
+  async function saveUser() {
+    setMessage('')
+    try {
+      const payload = normalizeUser(editingUser)
+      const saved = payload.id ? await updateUser(payload) : await createUser(payload)
+      setEditingUser(saved)
+      await load(saved.id, false)
+      setMessage('用户已保存')
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '保存用户失败')
+    }
+  }
+
+  async function removeUser(user: ApiUser) {
+    if (!user.id) return
+    await deleteUser(user.id)
+    setMessage('用户已删除')
+    setGeneratedKey('')
+    await load(undefined, true)
+  }
+
+  async function saveToken() {
+    if (!editingUser.id) {
+      setMessage('请先保存用户')
+      return
+    }
+    setMessage('')
+    try {
+      const payload = normalizeToken(editingToken)
+      if (payload.id) {
+        const saved = await updateUserToken(editingUser.id, payload)
+        setEditingToken(saved)
+        setGeneratedKey('')
+        setMessage('Token 已保存')
+      } else {
+        const result = await createUserToken(editingUser.id, payload)
+        setEditingToken(result.data)
+        setGeneratedKey(result.key)
+        setMessage('Token 已创建')
+      }
+      await loadTokens(editingUser.id)
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '保存 token 失败')
+    }
+  }
+
+  async function removeToken(token: UserToken) {
+    if (!editingUser.id || !token.id) return
+    await deleteUserToken(editingUser.id, token.id)
+    setGeneratedKey('')
+    setMessage('Token 已删除')
+    await loadTokens(editingUser.id)
+  }
+
+  function toggleModelLimit(modelName: string, checked: boolean) {
+    setEditingToken((current) => {
+      const next = new Set(current.model_limits || [])
+      if (checked) next.add(modelName)
+      else next.delete(modelName)
+      return { ...current, model_limits: Array.from(next).sort() }
+    })
+  }
+
+  return (
+    <section id="users" className="section-grid users-section">
+      <div className="panel">
+        <div className="panel-title">
+          <h2>用户</h2>
+          <button
+            className="icon-button"
+            onClick={() => {
+              setEditingUser(emptyUser())
+              setTokens([])
+              setEditingToken(emptyUserToken())
+              setGeneratedKey('')
+              setMessage('正在新建用户')
+            }}
+            title="新建用户"
+          >
+            <UserPlus size={18} />
+          </button>
+        </div>
+        <div className="table">
+          {users.length === 0 ? <p className="empty-row">暂无用户</p> : null}
+          {users.map((user) => (
+            <div className="row user-row" key={user.id}>
+              <div>
+                <strong>{user.display_name || user.username}</strong>
+                <span>{user.username}</span>
+              </div>
+              <div>{user.group || 'default'}</div>
+              <div className={user.status === 1 ? 'ok' : 'muted'}>{user.status === 1 ? '启用' : '停用'}</div>
+              <div>{user.request_count || 0} 次</div>
+              <div className="actions">
+                <button
+                  className="icon-button"
+                  onClick={async () => {
+                    setEditingUser(user)
+                    setGeneratedKey('')
+                    setMessage(`正在编辑 ${user.username}`)
+                    await loadTokens(user.id)
+                  }}
+                  title="编辑"
+                >
+                  <Settings size={17} />
+                </button>
+                <button className="icon-button danger" onClick={() => removeUser(user)} title="删除用户">
+                  <Trash2 size={17} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="panel editor user-editor">
+        <h2>{editingUser.id ? '编辑用户' : '新建用户'}</h2>
+        <label>
+          用户名
+          <input value={editingUser.username} onChange={(e) => patchUser({ username: e.target.value })} />
+        </label>
+        <label>
+          显示名称
+          <input value={editingUser.display_name} onChange={(e) => patchUser({ display_name: e.target.value })} />
+        </label>
+        <div className="inline">
+          <label>
+            分组
+            <input value={editingUser.group} onChange={(e) => patchUser({ group: e.target.value })} />
+          </label>
+          <label>
+            状态
+            <select value={editingUser.status} onChange={(e) => patchUser({ status: Number(e.target.value) as 1 | 2 })}>
+              <option value={1}>启用</option>
+              <option value={2}>停用</option>
+            </select>
+          </label>
+          <button className="primary" onClick={saveUser}>
+            <Save size={17} />
+            保存用户
+          </button>
+        </div>
+        <label>
+          备注
+          <textarea value={editingUser.remark || ''} onChange={(e) => patchUser({ remark: e.target.value })} />
+        </label>
+        <div className="token-box">
+          <div className="token-head">
+            <h3>授权 Token</h3>
+            <button
+              onClick={() => {
+                setEditingToken(emptyUserToken())
+                setGeneratedKey('')
+              }}
+              disabled={!editingUser.id}
+            >
+              <Plus size={17} />
+              新建
+            </button>
+          </div>
+          <div className="token-list">
+            {tokens.length === 0 ? <p className="muted">保存用户后创建 token。</p> : null}
+            {tokens.map((token) => (
+              <div className="token-row" key={token.id}>
+                <div>
+                  <strong>{token.name}</strong>
+                  <span>{token.key_preview || '********'}</span>
+                </div>
+                <div className={token.status === 1 ? 'ok' : 'muted'}>{token.status === 1 ? '启用' : '停用'}</div>
+                <div>{token.request_count || 0} 次</div>
+                <div className="actions">
+                  <button
+                    className="icon-button"
+                    onClick={() => {
+                      setEditingToken(token)
+                      setGeneratedKey('')
+                    }}
+                    title="编辑 token"
+                  >
+                    <KeyRound size={17} />
+                  </button>
+                  <button className="icon-button danger" onClick={() => removeToken(token)} title="删除 token">
+                    <Trash2 size={17} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          {generatedKey ? (
+            <div className="generated-key">
+              <label>
+                新 Token
+                <input readOnly value={generatedKey} />
+              </label>
+              <button
+                className="icon-button"
+                onClick={() => navigator.clipboard?.writeText(generatedKey)}
+                title="复制 token"
+              >
+                <Copy size={17} />
+              </button>
+            </div>
+          ) : null}
+          <div className="token-form">
+            <div className="inline">
+              <label>
+                名称
+                <input value={editingToken.name} onChange={(e) => patchToken({ name: e.target.value })} />
+              </label>
+              <label>
+                状态
+                <select
+                  value={editingToken.status}
+                  onChange={(e) => patchToken({ status: Number(e.target.value) as 1 | 2 })}
+                >
+                  <option value={1}>启用</option>
+                  <option value={2}>停用</option>
+                </select>
+              </label>
+              <button className="primary" onClick={saveToken} disabled={!editingUser.id}>
+                <Save size={17} />
+                保存 Token
+              </button>
+            </div>
+            <label>
+              过期时间
+              <input
+                type="datetime-local"
+                value={datetimeLocalValue(editingToken.expires_at)}
+                onChange={(e) => patchToken({ expires_at: isoFromDateInput(e.target.value) })}
+              />
+            </label>
+            <label>
+              IP 白名单
+              <textarea
+                value={(editingToken.allow_ips || []).join('\n')}
+                onChange={(e) => patchToken({ allow_ips: lines(e.target.value) })}
+              />
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={editingToken.model_limits_enabled}
+                onChange={(e) => patchToken({ model_limits_enabled: e.target.checked })}
+              />
+              启用模型白名单
+            </label>
+            {editingToken.model_limits_enabled ? (
+              <div className="limit-list">
+                {availableModels.length === 0 ? <p className="muted">渠道保存模型后可选择白名单。</p> : null}
+                {availableModels.map((modelName) => (
+                  <label className="check limit-item" key={modelName}>
+                    <input
+                      type="checkbox"
+                      checked={(editingToken.model_limits || []).includes(modelName)}
+                      onChange={(e) => toggleModelLimit(modelName, e.target.checked)}
+                    />
+                    {modelName}
+                  </label>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+        {message ? <p className="message">{message}</p> : null}
+      </div>
+    </section>
   )
 }
 
@@ -801,12 +1389,57 @@ function firstMappings(mappings: Record<string, string[]>) {
   return result
 }
 
+function ensureEditableKeys(channel: Channel): ChannelKey[] {
+  const keys = channelKeys(channel)
+  if (keys.length > 0) {
+    return keys.map((key, index) => ({
+      id: key.id || newLocalID(),
+      name: key.name || (index === 0 ? '默认 Key' : `Key ${index + 1}`),
+      api_key: key.api_key || '',
+      enabled: key.enabled !== false,
+      priority: 0,
+      weight: 1,
+    }))
+  }
+  return [emptyChannelKey(1)]
+}
+
+function applyChannelKeys(channel: Channel, keys: ChannelKey[]): Channel {
+  const nextKeys = keys.map((key, index) => ({
+    id: key.id || newLocalID(),
+    name: key.name || (index === 0 ? '默认 Key' : `Key ${index + 1}`),
+    api_key: key.api_key || '',
+    enabled: key.enabled !== false,
+    priority: 0,
+    weight: 1,
+  }))
+  const apiKey = nextKeys.find(canUseChannelKey)?.api_key || nextKeys.find((key) => key.api_key)?.api_key || ''
+  return { ...channel, keys: nextKeys, api_key: apiKey }
+}
+
+function normalizeChannelKeys(channel: Channel): ChannelKey[] {
+  return ensureEditableKeys(channel)
+    .map((key, index) => ({
+      id: key.id || newLocalID(),
+      name: key.name.trim() || (index === 0 ? '默认 Key' : `Key ${index + 1}`),
+      api_key: (key.api_key || '').trim(),
+      enabled: key.enabled !== false,
+      priority: 0,
+      weight: 1,
+    }))
+    .filter((key) => key.api_key !== '')
+}
+
 function normalizeChannel(channel: Channel): Channel {
   const model_mappings = cloneModelMappings(channel)
   const models = modelsFromMappings(model_mappings)
   const model_mapping = firstMappings(model_mappings)
+  const keys = normalizeChannelKeys(channel)
+  const api_key = keys.find(canUseChannelKey)?.api_key || keys[0]?.api_key || channel.api_key || ''
   return {
     ...channel,
+    api_key,
+    keys,
     models,
     model_mapping,
     model_mappings,
@@ -814,6 +1447,58 @@ function normalizeChannel(channel: Channel): Channel {
     strategy: channel.strategy || {},
     weight: channel.weight > 0 ? channel.weight : 1,
   }
+}
+
+function normalizeUser(user: ApiUser): ApiUser {
+  const username = user.username.trim()
+  return {
+    ...user,
+    username,
+    display_name: user.display_name.trim() || username,
+    group: user.group.trim() || 'default',
+    remark: user.remark?.trim(),
+    status: user.status || 1,
+  }
+}
+
+function normalizeToken(token: UserToken): UserToken {
+  return {
+    ...token,
+    name: token.name.trim() || 'default',
+    status: token.status || 1,
+    model_limits_enabled: Boolean(token.model_limits_enabled),
+    model_limits: token.model_limits_enabled ? uniqueStrings(token.model_limits) : [],
+    allow_ips: uniqueStrings(token.allow_ips),
+  }
+}
+
+function uniqueModels(channels: Channel[]) {
+  return uniqueStrings(channels.flatMap((channel) => channel.models || [])).sort()
+}
+
+function uniqueStrings(items: string[]) {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)))
+}
+
+function lines(value: string) {
+  return uniqueStrings(value.split(/[\n,]+/))
+}
+
+function datetimeLocalValue(value?: string) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (num: number) => String(num).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(
+    date.getMinutes(),
+  )}`
+}
+
+function isoFromDateInput(value: string) {
+  if (!value) return undefined
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return undefined
+  return date.toISOString()
 }
 
 createRoot(document.getElementById('root')!).render(

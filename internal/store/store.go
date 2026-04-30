@@ -16,6 +16,8 @@ type Store struct {
 	client   *mongo.Client
 	database *mongo.Database
 	channels *mongo.Collection
+	users    *mongo.Collection
+	tokens   *mongo.Collection
 }
 
 func Connect(ctx context.Context, uri string, database string) (*Store, error) {
@@ -31,6 +33,8 @@ func Connect(ctx context.Context, uri string, database string) (*Store, error) {
 		client:   client,
 		database: db,
 		channels: db.Collection("channels"),
+		users:    db.Collection("users"),
+		tokens:   db.Collection("tokens"),
 	}, nil
 }
 
@@ -39,10 +43,25 @@ func (s *Store) Close(ctx context.Context) error {
 }
 
 func (s *Store) EnsureIndexes(ctx context.Context) error {
-	_, err := s.channels.Indexes().CreateMany(ctx, []mongo.IndexModel{
+	if _, err := s.channels.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "enabled", Value: 1}}},
 		{Keys: bson.D{{Key: "models", Value: 1}}},
 		{Keys: bson.D{{Key: "provider", Value: 1}}},
+	}); err != nil {
+		return err
+	}
+	if _, err := s.users.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "username", Value: 1}}, Options: options.Index().SetUnique(true)},
+		{Keys: bson.D{{Key: "status", Value: 1}}},
+		{Keys: bson.D{{Key: "group", Value: 1}}},
+	}); err != nil {
+		return err
+	}
+	_, err := s.tokens.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "key_hash", Value: 1}}, Options: options.Index().SetUnique(true)},
+		{Keys: bson.D{{Key: "user_id", Value: 1}}},
+		{Keys: bson.D{{Key: "status", Value: 1}}},
+		{Keys: bson.D{{Key: "expires_at", Value: 1}}},
 	})
 	return err
 }
@@ -141,10 +160,8 @@ func (s *Store) UpdateChannel(ctx context.Context, id string, input *model.Chann
 	if err != nil {
 		return err
 	}
+	preserveChannelSecrets(input, existing)
 	input.Normalize()
-	if strings.TrimSpace(input.APIKey) == "" || strings.Contains(input.APIKey, "********") {
-		input.APIKey = existing.APIKey
-	}
 	input.ID = objectID
 	input.CreatedAt = existing.CreatedAt
 	input.UpdatedAt = time.Now()
@@ -165,6 +182,43 @@ func (s *Store) DeleteChannel(ctx context.Context, id string) error {
 		return mongo.ErrNoDocuments
 	}
 	return nil
+}
+
+func preserveChannelSecrets(input *model.Channel, existing *model.Channel) {
+	if isBlankOrMasked(input.APIKey) {
+		input.APIKey = existing.APIKey
+	}
+	existingByID := map[string]model.ChannelKey{}
+	existingByName := map[string]model.ChannelKey{}
+	for _, key := range existing.Keys {
+		if key.ID != "" {
+			existingByID[key.ID] = key
+		}
+		if key.Name != "" {
+			existingByName[key.Name] = key
+		}
+	}
+	for i := range input.Keys {
+		if !isBlankOrMasked(input.Keys[i].APIKey) {
+			continue
+		}
+		if existingKey, ok := existingByID[input.Keys[i].ID]; ok {
+			input.Keys[i].APIKey = existingKey.APIKey
+			continue
+		}
+		if existingKey, ok := existingByName[input.Keys[i].Name]; ok {
+			input.Keys[i].APIKey = existingKey.APIKey
+			continue
+		}
+		if len(input.Keys) == 1 {
+			input.Keys[i].APIKey = existing.APIKey
+		}
+	}
+}
+
+func isBlankOrMasked(key string) bool {
+	key = strings.TrimSpace(key)
+	return key == "" || strings.Contains(key, "********")
 }
 
 func (s *Store) UpdateChannelTestResult(ctx context.Context, id string, lastError string) error {

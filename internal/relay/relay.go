@@ -128,8 +128,16 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	for _, route := range ordered {
 		channel := route.Channel
 		upstreamModel := route.UpstreamModel
-		req, err := h.provider.BuildChatRequest(c.Request.Context(), channel, body, upstreamModel)
+		key, ok := h.meter.SelectKey(channel)
+		if !ok {
+			lastErr = errors.New("no available api key for channel")
+			continue
+		}
+		requestChannel := channel
+		requestChannel.APIKey = key.APIKey
+		req, err := h.provider.BuildChatRequest(c.Request.Context(), requestChannel, body, upstreamModel)
 		if err != nil {
+			h.meter.RecordKey(channel, key, 0, 0, false, err.Error())
 			lastErr = err
 			continue
 		}
@@ -137,12 +145,14 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		resp, err := h.provider.Do(req)
 		latency := time.Since(started)
 		if err != nil {
+			h.meter.RecordKey(channel, key, latency, 0, false, err.Error())
 			h.meter.Record(channel, route.ExternalModel, upstreamModel, latency, 0, false, 0, err.Error())
 			lastErr = err
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			errText := copyUpstreamError(resp)
+			h.meter.RecordKey(channel, key, latency, resp.StatusCode, false, errText.Error())
 			h.meter.Record(channel, route.ExternalModel, upstreamModel, latency, resp.StatusCode, false, 0, errText.Error())
 			lastErr = errText
 			if c.Writer.Written() {
@@ -150,6 +160,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			}
 			continue
 		}
+		h.meter.RecordKey(channel, key, latency, resp.StatusCode, true, "")
 		h.meter.Record(channel, route.ExternalModel, upstreamModel, latency, resp.StatusCode, true, estimateQuality(resp), "")
 		h.probeUnavailable(c, routes, route.Key(), body)
 		proxyResponse(c, resp, h.guard)
@@ -168,8 +179,15 @@ func (h *Handler) probeUnavailable(c *gin.Context, routes []model.ChannelRoute, 
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			req, err := h.provider.BuildChatRequest(ctx, route.Channel, body, route.UpstreamModel)
+			key, ok := h.meter.SelectKey(route.Channel)
+			if !ok {
+				return
+			}
+			requestChannel := route.Channel
+			requestChannel.APIKey = key.APIKey
+			req, err := h.provider.BuildChatRequest(ctx, requestChannel, body, route.UpstreamModel)
 			if err != nil {
+				h.meter.RecordKey(route.Channel, key, 0, 0, false, err.Error())
 				h.meter.Record(route.Channel, route.ExternalModel, route.UpstreamModel, 0, 0, false, 0, err.Error())
 				return
 			}
@@ -177,6 +195,7 @@ func (h *Handler) probeUnavailable(c *gin.Context, routes []model.ChannelRoute, 
 			resp, err := h.provider.Do(req)
 			latency := time.Since(started)
 			if err != nil {
+				h.meter.RecordKey(route.Channel, key, latency, 0, false, err.Error())
 				h.meter.Record(route.Channel, route.ExternalModel, route.UpstreamModel, latency, 0, false, 0, err.Error())
 				return
 			}
@@ -187,6 +206,7 @@ func (h *Handler) probeUnavailable(c *gin.Context, routes []model.ChannelRoute, 
 			if !success {
 				errText = resp.Status
 			}
+			h.meter.RecordKey(route.Channel, key, latency, resp.StatusCode, success, errText)
 			h.meter.Record(route.Channel, route.ExternalModel, route.UpstreamModel, latency, resp.StatusCode, success, boolQuality(success), errText)
 		}()
 	}

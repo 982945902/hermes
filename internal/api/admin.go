@@ -34,14 +34,16 @@ type channelTestRequest struct {
 	Prompt        string `json:"prompt"`
 	Model         string `json:"model"`
 	UpstreamModel string `json:"upstream_model"`
+	KeyID         string `json:"key_id"`
 }
 
 type fetchModelsRequest struct {
-	ID           string            `json:"id"`
-	Provider     string            `json:"provider"`
-	BaseURL      string            `json:"base_url"`
-	APIKey       string            `json:"api_key"`
-	ExtraHeaders map[string]string `json:"extra_headers"`
+	ID           string             `json:"id"`
+	Provider     string             `json:"provider"`
+	BaseURL      string             `json:"base_url"`
+	APIKey       string             `json:"api_key"`
+	Keys         []model.ChannelKey `json:"keys"`
+	ExtraHeaders map[string]string  `json:"extra_headers"`
 }
 
 func NewAdminHandler(store *store.Store, channelCache *cache.ChannelCache, auth *auth.Service, provider *provider.OpenAICompatible, meter *health.Meter) *AdminHandler {
@@ -110,7 +112,7 @@ func (h *AdminHandler) CreateChannel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channel"})
 		return
 	}
-	if err := validateChannel(&channel); err != nil {
+	if err := validateChannel(&channel, false); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -128,7 +130,7 @@ func (h *AdminHandler) UpdateChannel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channel"})
 		return
 	}
-	if err := validateChannel(&channel); err != nil {
+	if err := validateChannel(&channel, true); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -172,8 +174,15 @@ func (h *AdminHandler) TestChannel(c *gin.Context) {
 	if upstreamModel == "" {
 		upstreamModel = channel.UpstreamModel(modelName)
 	}
+	key, ok := selectChannelKeyForTest(h.meter, *channel, req.KeyID)
+	if !ok {
+		c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": "no available api key"})
+		return
+	}
+	requestChannel := *channel
+	requestChannel.APIKey = key.APIKey
 	started := time.Now()
-	result, testErr := h.provider.Test(ctx, *channel, modelName, upstreamModel, req.Prompt)
+	result, testErr := h.provider.Test(ctx, requestChannel, modelName, upstreamModel, req.Prompt)
 	latency := time.Since(started)
 	lastError := ""
 	if testErr != nil {
@@ -184,6 +193,7 @@ func (h *AdminHandler) TestChannel(c *gin.Context) {
 		statusCode = statusFromTestError(lastError)
 	}
 	h.meter.Record(*channel, modelName, upstreamModel, latency, statusCode, testErr == nil, boolQuality(testErr == nil), lastError)
+	h.meter.RecordKey(*channel, key, latency, statusCode, testErr == nil, lastError)
 	_ = h.store.UpdateChannelTestResult(c.Request.Context(), c.Param("id"), lastError)
 	h.cache.ReloadAsync()
 	if testErr != nil {
@@ -232,6 +242,7 @@ func (h *AdminHandler) FetchModels(c *gin.Context) {
 		Provider:     req.Provider,
 		BaseURL:      req.BaseURL,
 		APIKey:       apiKey,
+		Keys:         req.Keys,
 		ExtraHeaders: req.ExtraHeaders,
 	}
 	channel.Normalize()
@@ -245,7 +256,20 @@ func (h *AdminHandler) FetchModels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": models})
 }
 
-func validateChannel(channel *model.Channel) error {
+func selectChannelKeyForTest(meter *health.Meter, channel model.Channel, keyID string) (model.ChannelKey, bool) {
+	keyID = strings.TrimSpace(keyID)
+	if keyID != "" {
+		for _, key := range channel.ActiveKeys() {
+			if key.ID == keyID {
+				return key, true
+			}
+		}
+		return model.ChannelKey{}, false
+	}
+	return meter.SelectKey(channel)
+}
+
+func validateChannel(channel *model.Channel, allowMaskedKey bool) error {
 	channel.Normalize()
 	if channel.Name == "" {
 		return errString("name is required")
@@ -253,7 +277,7 @@ func validateChannel(channel *model.Channel) error {
 	if channel.BaseURL == "" {
 		return errString("base_url is required")
 	}
-	if channel.APIKey == "" {
+	if !channel.HasConfiguredKey(allowMaskedKey) {
 		return errString("api_key is required")
 	}
 	if len(channel.Models) == 0 {
