@@ -88,7 +88,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		openAIError(c, http.StatusNotFound, "model is not available")
 		return
 	}
-	ordered := h.meter.Rank(channels)
+	ordered := h.meter.Rank(channels, envelope.Model)
 	if len(ordered) == 0 {
 		openAIError(c, http.StatusServiceUnavailable, "all matching channels are currently unavailable")
 		return
@@ -106,20 +106,20 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		resp, err := h.provider.Do(req)
 		latency := time.Since(started)
 		if err != nil {
-			h.meter.Record(channel, latency, 0, false, 0, err.Error())
+			h.meter.Record(channel, envelope.Model, upstreamModel, latency, 0, false, 0, err.Error())
 			lastErr = err
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			errText := copyUpstreamError(resp)
-			h.meter.Record(channel, latency, resp.StatusCode, false, 0, errText.Error())
+			h.meter.Record(channel, envelope.Model, upstreamModel, latency, resp.StatusCode, false, 0, errText.Error())
 			lastErr = errText
 			if c.Writer.Written() {
 				return
 			}
 			continue
 		}
-		h.meter.Record(channel, latency, resp.StatusCode, true, estimateQuality(resp), "")
+		h.meter.Record(channel, envelope.Model, upstreamModel, latency, resp.StatusCode, true, estimateQuality(resp), "")
 		h.probeUnavailable(c, channels, channel.ID.Hex(), body, envelope.Model)
 		proxyResponse(c, resp, h.guard)
 		return
@@ -131,7 +131,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 }
 
 func (h *Handler) probeUnavailable(c *gin.Context, channels []model.Channel, selectedID string, body []byte, modelName string) {
-	probes := h.meter.ProbeCandidates(channels, selectedID)
+	probes := h.meter.ProbeCandidates(channels, selectedID, modelName)
 	for _, channel := range probes {
 		channel := channel
 		upstreamModel := channel.UpstreamModel(modelName)
@@ -140,14 +140,14 @@ func (h *Handler) probeUnavailable(c *gin.Context, channels []model.Channel, sel
 			defer cancel()
 			req, err := h.provider.BuildChatRequest(ctx, channel, body, upstreamModel)
 			if err != nil {
-				h.meter.Record(channel, 0, 0, false, 0, err.Error())
+				h.meter.Record(channel, modelName, upstreamModel, 0, 0, false, 0, err.Error())
 				return
 			}
 			started := time.Now()
 			resp, err := h.provider.Do(req)
 			latency := time.Since(started)
 			if err != nil {
-				h.meter.Record(channel, latency, 0, false, 0, err.Error())
+				h.meter.Record(channel, modelName, upstreamModel, latency, 0, false, 0, err.Error())
 				return
 			}
 			defer resp.Body.Close()
@@ -157,7 +157,7 @@ func (h *Handler) probeUnavailable(c *gin.Context, channels []model.Channel, sel
 			if !success {
 				errText = resp.Status
 			}
-			h.meter.Record(channel, latency, resp.StatusCode, success, boolQuality(success), errText)
+			h.meter.Record(channel, modelName, upstreamModel, latency, resp.StatusCode, success, boolQuality(success), errText)
 		}()
 	}
 }

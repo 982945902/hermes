@@ -4,6 +4,7 @@ import (
 	"math"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,14 +30,23 @@ const (
 
 type Meter struct {
 	mu    sync.RWMutex
-	stats map[string]*ChannelStats
+	stats map[string]*ModelStats
 	rand  *rand.Rand
 }
 
-type ChannelStats struct {
+type ChannelSnapshot struct {
+	ChannelID string       `json:"channel_id"`
+	Name      string       `json:"name"`
+	Provider  string       `json:"provider"`
+	Models    []ModelStats `json:"models"`
+}
+
+type ModelStats struct {
 	ChannelID           string    `json:"channel_id"`
 	Name                string    `json:"name"`
 	Provider            string    `json:"provider"`
+	ExternalModel       string    `json:"external_model"`
+	UpstreamModel       string    `json:"upstream_model"`
 	Requests            int64     `json:"requests"`
 	SuccessEWMA         float64   `json:"success_rate"`
 	LatencyEWMA         float64   `json:"latency_ms"`
@@ -51,23 +61,23 @@ type ChannelStats struct {
 }
 
 type Snapshot struct {
-	GeneratedAt time.Time      `json:"generated_at"`
-	Channels    []ChannelStats `json:"channels"`
+	GeneratedAt time.Time         `json:"generated_at"`
+	Channels    []ChannelSnapshot `json:"channels"`
 }
 
 func NewMeter() *Meter {
 	return &Meter{
-		stats: map[string]*ChannelStats{},
+		stats: map[string]*ModelStats{},
 		rand:  rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
-func (m *Meter) Record(channel model.Channel, latency time.Duration, statusCode int, success bool, quality float64, errText string) {
+func (m *Meter) Record(channel model.Channel, externalModel string, upstreamModel string, latency time.Duration, statusCode int, success bool, quality float64, errText string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	id := channel.ID.Hex()
-	stat := m.ensureLocked(channel)
+	stat := m.ensureLocked(channel, externalModel, upstreamModel)
 	latencyMS := float64(latency.Milliseconds())
 	successValue := 0.0
 	if success {
@@ -90,6 +100,8 @@ func (m *Meter) Record(channel model.Channel, latency time.Duration, statusCode 
 	stat.ChannelID = id
 	stat.Name = channel.Name
 	stat.Provider = channel.Provider
+	stat.ExternalModel = externalModel
+	stat.UpstreamModel = upstreamModel
 	stat.Requests++
 	stat.LastStatusCode = statusCode
 	stat.LastError = errText
@@ -110,20 +122,45 @@ func (m *Meter) Snapshot() Snapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	channels := make([]ChannelStats, 0, len(m.stats))
+	grouped := map[string]*ChannelSnapshot{}
 	for _, stat := range m.stats {
-		channels = append(channels, *stat)
+		channel, ok := grouped[stat.ChannelID]
+		if !ok {
+			channel = &ChannelSnapshot{
+				ChannelID: stat.ChannelID,
+				Name:      stat.Name,
+				Provider:  stat.Provider,
+				Models:    []ModelStats{},
+			}
+			grouped[stat.ChannelID] = channel
+		}
+		channel.Models = append(channel.Models, *stat)
+	}
+
+	channels := make([]ChannelSnapshot, 0, len(grouped))
+	for _, channel := range grouped {
+		sort.Slice(channel.Models, func(i, j int) bool {
+			if channel.Models[i].Tier != channel.Models[j].Tier {
+				return tierRank(channel.Models[i].Tier) < tierRank(channel.Models[j].Tier)
+			}
+			if channel.Models[i].Score != channel.Models[j].Score {
+				return channel.Models[i].Score > channel.Models[j].Score
+			}
+			return channel.Models[i].ExternalModel < channel.Models[j].ExternalModel
+		})
+		channels = append(channels, *channel)
 	}
 	sort.Slice(channels, func(i, j int) bool {
-		if channels[i].Tier != channels[j].Tier {
-			return tierRank(channels[i].Tier) < tierRank(channels[j].Tier)
+		leftTier, rightTier := channelTier(channels[i]), channelTier(channels[j])
+		if leftTier != rightTier {
+			return tierRank(leftTier) < tierRank(rightTier)
 		}
-		return channels[i].Score > channels[j].Score
+		return channelScore(channels[i]) > channelScore(channels[j])
 	})
 	return Snapshot{GeneratedAt: time.Now(), Channels: channels}
 }
 
-func (m *Meter) Rank(channels []model.Channel) []model.Channel {
+func (m *Meter) Rank(channels []model.Channel, externalModel string) []model.Channel {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -133,7 +170,8 @@ func (m *Meter) Rank(channels []model.Channel) []model.Channel {
 	}
 	candidates := make([]candidate, 0, len(channels))
 	for _, channel := range channels {
-		stat := m.ensureLocked(channel)
+		upstreamModel := channel.UpstreamModel(externalModel)
+		stat := m.ensureLocked(channel, externalModel, upstreamModel)
 		if stat.Tier == TierUnavailable {
 			continue
 		}
@@ -166,7 +204,7 @@ func (m *Meter) Rank(channels []model.Channel) []model.Channel {
 	return ranked
 }
 
-func (m *Meter) ProbeCandidates(channels []model.Channel, selectedID string) []model.Channel {
+func (m *Meter) ProbeCandidates(channels []model.Channel, selectedID string, externalModel string) []model.Channel {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -176,7 +214,8 @@ func (m *Meter) ProbeCandidates(channels []model.Channel, selectedID string) []m
 		if channel.ID.Hex() == selectedID {
 			continue
 		}
-		stat := m.ensureLocked(channel)
+		upstreamModel := channel.UpstreamModel(externalModel)
+		stat := m.ensureLocked(channel, externalModel, upstreamModel)
 		if stat.Tier != TierUnavailable {
 			continue
 		}
@@ -192,27 +231,55 @@ func (m *Meter) ProbeCandidates(channels []model.Channel, selectedID string) []m
 	return result
 }
 
-func (m *Meter) ensureLocked(channel model.Channel) *ChannelStats {
-	id := channel.ID.Hex()
+func (m *Meter) ensureLocked(channel model.Channel, externalModel string, upstreamModel string) *ModelStats {
+	id := metricKey(channel.ID.Hex(), externalModel, upstreamModel)
 	if stat, ok := m.stats[id]; ok {
 		stat.Name = channel.Name
 		stat.Provider = channel.Provider
+		stat.ExternalModel = externalModel
+		stat.UpstreamModel = upstreamModel
 		return stat
 	}
-	stat := &ChannelStats{
-		ChannelID:   id,
-		Name:        channel.Name,
-		Provider:    channel.Provider,
-		SuccessEWMA: 1,
-		QualityEWMA: 0.75,
-		Score:       0.72,
-		Tier:        TierExcellent,
+	stat := &ModelStats{
+		ChannelID:     channel.ID.Hex(),
+		Name:          channel.Name,
+		Provider:      channel.Provider,
+		ExternalModel: externalModel,
+		UpstreamModel: upstreamModel,
+		SuccessEWMA:   1,
+		QualityEWMA:   0.75,
+		Score:         0.72,
+		Tier:          TierExcellent,
 	}
 	m.stats[id] = stat
 	return stat
 }
 
-func computeScore(stat *ChannelStats) float64 {
+func metricKey(channelID string, externalModel string, upstreamModel string) string {
+	return strings.Join([]string{channelID, externalModel, upstreamModel}, "\x00")
+}
+
+func channelTier(channel ChannelSnapshot) Tier {
+	result := TierUnavailable
+	for _, stat := range channel.Models {
+		if tierRank(stat.Tier) < tierRank(result) {
+			result = stat.Tier
+		}
+	}
+	return result
+}
+
+func channelScore(channel ChannelSnapshot) float64 {
+	best := 0.0
+	for _, stat := range channel.Models {
+		if stat.Score > best {
+			best = stat.Score
+		}
+	}
+	return best
+}
+
+func computeScore(stat *ModelStats) float64 {
 	latencyScore := 0.72
 	if stat.LatencyEWMA > 0 {
 		latencyScore = math.Exp(-stat.LatencyEWMA / targetLatencyMS)
@@ -220,7 +287,7 @@ func computeScore(stat *ChannelStats) float64 {
 	return clamp01(latencyScore*0.35 + stat.SuccessEWMA*0.40 + stat.QualityEWMA*0.25)
 }
 
-func computeTier(stat *ChannelStats) Tier {
+func computeTier(stat *ModelStats) Tier {
 	if stat.ConsecutiveFailures >= unavailableFailN || stat.SuccessEWMA < unavailableSuccess {
 		return TierUnavailable
 	}

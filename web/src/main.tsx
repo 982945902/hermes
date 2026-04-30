@@ -16,7 +16,7 @@ import {
   testChannel,
   updateChannel,
 } from './api'
-import type { BarometerChannel, Channel } from './types'
+import type { BarometerChannel, BarometerModel, Channel } from './types'
 import './styles.css'
 
 const presets = {
@@ -206,17 +206,40 @@ function Barometer() {
 }
 
 function BarometerCard({ channel }: { channel: BarometerChannel }) {
-  const scorePct = Math.round(channel.score * 100)
-  const successPct = Math.round(channel.success_rate * 100)
-  const qualityPct = Math.round(channel.quality * 100)
+  const bestTier = channel.models.reduce<BarometerModel['tier'] | undefined>((tier, item) => {
+    if (!tier) return item.tier
+    return tierRank(item.tier) < tierRank(tier) ? item.tier : tier
+  }, undefined)
   return (
-    <div className={`barometer-card ${channel.tier}`}>
+    <div className={`barometer-card ${bestTier || 'excellent'}`}>
       <div className="barometer-head">
         <div>
           <strong>{channel.name}</strong>
           <span>{channel.provider}</span>
         </div>
-        <b>{tierLabel(channel.tier)}</b>
+        <b>{channel.models.length} 个模型</b>
+      </div>
+      <div className="barometer-models">
+        {channel.models.map((item) => (
+          <BarometerModelRow key={`${item.external_model}-${item.upstream_model}`} item={item} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function BarometerModelRow({ item }: { item: BarometerModel }) {
+  const scorePct = Math.round(item.score * 100)
+  const successPct = Math.round(item.success_rate * 100)
+  const qualityPct = Math.round(item.quality * 100)
+  return (
+    <div className={`barometer-model ${item.tier}`}>
+      <div className="barometer-model-title">
+        <div>
+          <strong>{item.external_model}</strong>
+          <span>{item.upstream_model === item.external_model ? '直连上游模型' : `映射到 ${item.upstream_model}`}</span>
+        </div>
+        <b>{tierLabel(item.tier)}</b>
       </div>
       <div className="gauge">
         <div style={{ width: `${scorePct}%` }} />
@@ -224,18 +247,26 @@ function BarometerCard({ channel }: { channel: BarometerChannel }) {
       <div className="metrics">
         <span>评分 {scorePct}</span>
         <span>成功率 {successPct}%</span>
-        <span>耗时 {Math.round(channel.latency_ms)}ms</span>
+        <span>耗时 {Math.round(item.latency_ms)}ms</span>
         <span>质量 {qualityPct}</span>
+        <span>样本 {item.requests}</span>
+        <span>状态 {item.last_status_code || '-'}</span>
       </div>
-      {channel.last_error ? <p className="row-error">{channel.last_error}</p> : null}
+      {item.last_error ? <p className="row-error">{item.last_error}</p> : null}
     </div>
   )
 }
 
-function tierLabel(tier: BarometerChannel['tier']) {
+function tierLabel(tier: BarometerModel['tier']) {
   if (tier === 'excellent') return '优质'
   if (tier === 'unstable') return '不稳定'
   return '不可用'
+}
+
+function tierRank(tier: BarometerModel['tier']) {
+  if (tier === 'excellent') return 0
+  if (tier === 'unstable') return 1
+  return 2
 }
 
 function Channels() {

@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/982945902/hermes/internal/auth"
@@ -160,11 +162,23 @@ func (h *AdminHandler) TestChannel(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
+	modelName := req.Model
+	if modelName == "" && len(channel.Models) > 0 {
+		modelName = channel.Models[0]
+	}
+	upstreamModel := channel.UpstreamModel(modelName)
+	started := time.Now()
 	result, testErr := h.provider.Test(ctx, *channel, req.Model, req.Prompt)
+	latency := time.Since(started)
 	lastError := ""
 	if testErr != nil {
 		lastError = testErr.Error()
 	}
+	statusCode := 200
+	if testErr != nil {
+		statusCode = statusFromTestError(lastError)
+	}
+	h.meter.Record(*channel, modelName, upstreamModel, latency, statusCode, testErr == nil, boolQuality(testErr == nil), lastError)
 	_ = h.store.UpdateChannelTestResult(c.Request.Context(), c.Param("id"), lastError)
 	h.cache.ReloadAsync()
 	if testErr != nil {
@@ -172,6 +186,26 @@ func (h *AdminHandler) TestChannel(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "response": result})
+}
+
+func statusFromTestError(message string) int {
+	const prefix = "upstream returned "
+	if !strings.HasPrefix(message, prefix) {
+		return 0
+	}
+	codeText, _, _ := strings.Cut(strings.TrimPrefix(message, prefix), ":")
+	code, err := strconv.Atoi(strings.TrimSpace(codeText))
+	if err != nil {
+		return 0
+	}
+	return code
+}
+
+func boolQuality(success bool) float64 {
+	if success {
+		return 0.78
+	}
+	return 0
 }
 
 func (h *AdminHandler) FetchModels(c *gin.Context) {

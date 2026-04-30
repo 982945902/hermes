@@ -100,8 +100,8 @@ headers:
 2. The handler reads the JSON body and extracts `model`.
 3. Identity guard detects model-probing requests and can return a fixed response without calling upstream.
 4. Identity guard injects a system prompt into normal chat requests.
-5. Enabled channels whose `models` contain the requested model are loaded from MongoDB.
-6. The in-memory barometer ranks channels using recent latency, success rate, quality, static weight, and static priority.
+5. Enabled channels whose `models` contain the requested model are loaded from the in-memory channel cache.
+6. The in-memory barometer ranks candidates using metrics for the requested `channel + external_model + upstream_model`.
 7. `model` is replaced with `model_mapping[model]` when present.
 8. The request is forwarded to `{base_url}/chat/completions`.
 9. JSON responses and SSE stream responses are sanitized and passed through to the client.
@@ -132,7 +132,7 @@ The guard is a pragmatic gateway control, not a cryptographic guarantee. It is d
 
 The barometer is intentionally in-memory in the first version. It resets when the process restarts.
 
-Each channel tracks:
+Each channel/model pair tracks:
 
 - EWMA latency
 - EWMA success rate
@@ -140,6 +140,8 @@ Each channel tracks:
 - Composite score
 - Consecutive failures
 - Runtime tier: `excellent`, `unstable`, or `unavailable`
+
+The admin UI groups these rows under each channel, so the visible structure is `channel -> model metrics`. This matters because the same external model can be mapped to different upstream models across multiple channels, and each route can behave differently.
 
 Composite score:
 
@@ -163,9 +165,9 @@ sample = score + normal(0, tier_sigma)
 effective = sample * sqrt(static_weight) + static_priority * 0.02
 ```
 
-The highest effective sample is tried first. This behaves like a normal-distribution-based exploration policy: better channels win more often, but lower-scored channels still receive limited opportunities. `unavailable` channels are excluded from the main request path.
+The highest effective sample is tried first. This behaves like a normal-distribution-based exploration policy: better channel/model routes win more often, but lower-scored routes still receive limited opportunities. `unavailable` channel/model routes are excluded from the main request path.
 
-Unavailable channels are probed with low-probability shadow requests. When a normal request succeeds through a usable channel, Hermes may also send the same request to an unavailable channel in the background. The shadow response is discarded and only updates barometer metrics. Probe frequency is throttled per channel.
+Unavailable channel/model routes are probed with low-probability shadow requests. When a normal request succeeds through a usable route, Hermes may also send the same request to an unavailable route in the background. The shadow response is discarded and only updates barometer metrics. Probe frequency is throttled per channel/model route.
 
 ## Deployment
 

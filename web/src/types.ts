@@ -17,10 +17,12 @@ export type Channel = {
   updated_at?: string
 }
 
-export type BarometerChannel = {
+export type BarometerModel = {
   channel_id: string
   name: string
   provider: string
+  external_model: string
+  upstream_model: string
   requests: number
   success_rate: number
   latency_ms: number
@@ -32,6 +34,13 @@ export type BarometerChannel = {
   last_error?: string
   last_updated_at?: string
   last_probe_at?: string
+}
+
+export type BarometerChannel = {
+  channel_id: string
+  name: string
+  provider: string
+  models: BarometerModel[]
 }
 
 export type BarometerSnapshot = {

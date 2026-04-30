@@ -220,8 +220,8 @@ header p {
 
 .barometer-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 12px;
   padding: 14px;
 }
 
@@ -268,6 +268,67 @@ header p {
 }
 
 .barometer-head b {
+  font-size: 12px;
+}
+
+.barometer-models {
+  display: grid;
+  gap: 8px;
+}
+
+.barometer-model {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  padding: 9px;
+  background: #ffffff;
+}
+
+.barometer-model.excellent {
+  border-left: 3px solid #22c55e;
+}
+
+.barometer-model.unstable {
+  border-left: 3px solid #eab308;
+}
+
+.barometer-model.unavailable {
+  border-left: 3px solid #ef4444;
+}
+
+.barometer-model-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.barometer-model-title strong,
+.barometer-model-title span {
+  display: block;
+}
+
+.barometer-model-title strong {
+  max-width: 240px;
+  overflow: hidden;
+  color: #0f172a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.barometer-model-title span {
+  max-width: 240px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.barometer-model-title b {
+  flex: 0 0 auto;
   font-size: 12px;
 }
 
