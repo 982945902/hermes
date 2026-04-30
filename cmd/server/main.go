@@ -39,7 +39,7 @@ func main() {
 
 	httpClient := &http.Client{Timeout: cfg.UpstreamTimeout}
 	provider := provider.NewOpenAICompatible(httpClient)
-	meter := health.NewMeter()
+	meter := health.NewMeter(cfg.RoutingStrategy)
 	guard := identity.NewGuard(cfg.IdentityName, cfg.IdentityEnabled)
 	authService := auth.New(cfg)
 	adminHandler := api.NewAdminHandler(db, channelCache, authService, provider, meter)

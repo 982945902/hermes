@@ -38,6 +38,7 @@ type Meter struct {
 	stats    map[string]*ModelStats
 	keyStats map[string]*KeyStats
 	rand     *rand.Rand
+	strategy RoutingStrategy
 }
 
 type ChannelSnapshot struct {
@@ -102,11 +103,16 @@ type Snapshot struct {
 	Keys        []KeyStats              `json:"keys"`
 }
 
-func NewMeter() *Meter {
+func NewMeter(strategyName ...string) *Meter {
+	name := ""
+	if len(strategyName) > 0 {
+		name = strategyName[0]
+	}
 	return &Meter{
 		stats:    map[string]*ModelStats{},
 		keyStats: map[string]*KeyStats{},
 		rand:     rand.New(rand.NewSource(time.Now().UnixNano())),
+		strategy: NewRoutingStrategy(name),
 	}
 }
 
@@ -160,7 +166,7 @@ func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	activeRoute := map[string]model.Channel{}
+	activeRoute := map[string]model.ChannelRoute{}
 	activeKey := map[string]struct{}{}
 	filterRoutes := len(activeChannels) > 0
 	if filterRoutes {
@@ -168,7 +174,7 @@ func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 			channel.Normalize()
 			for _, route := range channel.Routes() {
 				key := metricKey(route.Channel.ID.Hex(), route.ExternalModel, route.UpstreamModel)
-				activeRoute[key] = route.Channel
+				activeRoute[key] = route
 			}
 			for _, key := range channel.ActiveKeys() {
 				activeKey[keyMetricKey(channel.ID.Hex(), key.ID)] = struct{}{}
@@ -178,37 +184,27 @@ func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 
 	grouped := map[string]*ChannelSnapshot{}
 	byExternalModel := map[string]*ExternalModelSnapshot{}
+	seenRoute := map[string]struct{}{}
 	for key, stat := range m.stats {
-		activeChannel, hasActiveFilter := activeRoute[key]
+		activeRouteItem, hasActiveFilter := activeRoute[key]
 		if filterRoutes && !hasActiveFilter {
 			continue
 		}
+		seenRoute[key] = struct{}{}
 		item := *stat
 		if hasActiveFilter {
-			item.Name = activeChannel.Name
-			item.Provider = activeChannel.Provider
+			item.Name = activeRouteItem.Channel.Name
+			item.Provider = activeRouteItem.Channel.Provider
 		}
-		channel, ok := grouped[stat.ChannelID]
-		if !ok {
-			channel = &ChannelSnapshot{
-				ChannelID: item.ChannelID,
-				Name:      item.Name,
-				Provider:  item.Provider,
-				Models:    []ModelStats{},
+		appendSnapshotItem(grouped, byExternalModel, item)
+	}
+	if filterRoutes {
+		for key, route := range activeRoute {
+			if _, ok := seenRoute[key]; ok {
+				continue
 			}
-			grouped[item.ChannelID] = channel
+			appendSnapshotItem(grouped, byExternalModel, initialRouteStats(route))
 		}
-		channel.Models = append(channel.Models, item)
-
-		externalModel, ok := byExternalModel[item.ExternalModel]
-		if !ok {
-			externalModel = &ExternalModelSnapshot{
-				ExternalModel: item.ExternalModel,
-				Routes:        []ModelStats{},
-			}
-			byExternalModel[item.ExternalModel] = externalModel
-		}
-		externalModel.Routes = append(externalModel.Routes, item)
 	}
 
 	channels := make([]ChannelSnapshot, 0, len(grouped))
@@ -287,41 +283,23 @@ func (m *Meter) Rank(routes []model.ChannelRoute) []model.ChannelRoute {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	type candidate struct {
-		route model.ChannelRoute
-		value float64
-	}
-	candidates := make([]candidate, 0, len(routes))
+	candidates := make([]RouteCandidate, 0, len(routes))
+	now := time.Now()
 	for _, route := range routes {
 		stat := m.ensureLocked(route.Channel, route.ExternalModel, route.UpstreamModel)
 		if stat.Tier == TierUnavailable {
 			continue
 		}
-		score := stat.Score
-		if stat.Requests == 0 {
-			score = 0.62
+		keyWeight := m.availableKeyWeightLocked(route.Channel, now)
+		if keyWeight <= 0 {
+			continue
 		}
-		sigma := 0.08
-		if stat.Requests == 0 {
-			sigma = 0.22
-		} else if stat.Tier == TierUnstable {
-			sigma = 0.16
-			score *= 0.72
-		}
-		weight := float64(route.Channel.Weight)
-		if weight <= 0 {
-			weight = 1
-		}
-		sampled := score + m.rand.NormFloat64()*sigma
-		value := sampled*math.Sqrt(weight) + float64(route.Channel.Priority)*0.02
-		candidates = append(candidates, candidate{route: route, value: value})
+		candidates = append(candidates, routeCandidate(route, *stat, keyWeight))
 	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].value > candidates[j].value
-	})
+	candidates = m.strategy.Rank(RoutingContext{Rand: m.rand, Now: now}, candidates)
 	ranked := make([]model.ChannelRoute, len(candidates))
 	for i, candidate := range candidates {
-		ranked[i] = candidate.route
+		ranked[i] = candidate.Route
 	}
 	return ranked
 }
@@ -469,6 +447,44 @@ func metricKey(channelID string, externalModel string, upstreamModel string) str
 	return strings.Join([]string{channelID, externalModel, upstreamModel}, "\x00")
 }
 
+func appendSnapshotItem(grouped map[string]*ChannelSnapshot, byExternalModel map[string]*ExternalModelSnapshot, item ModelStats) {
+	channel, ok := grouped[item.ChannelID]
+	if !ok {
+		channel = &ChannelSnapshot{
+			ChannelID: item.ChannelID,
+			Name:      item.Name,
+			Provider:  item.Provider,
+			Models:    []ModelStats{},
+		}
+		grouped[item.ChannelID] = channel
+	}
+	channel.Models = append(channel.Models, item)
+
+	externalModel, ok := byExternalModel[item.ExternalModel]
+	if !ok {
+		externalModel = &ExternalModelSnapshot{
+			ExternalModel: item.ExternalModel,
+			Routes:        []ModelStats{},
+		}
+		byExternalModel[item.ExternalModel] = externalModel
+	}
+	externalModel.Routes = append(externalModel.Routes, item)
+}
+
+func initialRouteStats(route model.ChannelRoute) ModelStats {
+	return ModelStats{
+		ChannelID:     route.Channel.ID.Hex(),
+		Name:          route.Channel.Name,
+		Provider:      route.Channel.Provider,
+		ExternalModel: route.ExternalModel,
+		UpstreamModel: route.UpstreamModel,
+		SuccessEWMA:   1,
+		QualityEWMA:   0.75,
+		Score:         0.72,
+		Tier:          TierExcellent,
+	}
+}
+
 func (m *Meter) ensureKeyLocked(channel model.Channel, key model.ChannelKey) *KeyStats {
 	id := keyMetricKey(channel.ID.Hex(), key.ID)
 	if stat, ok := m.keyStats[id]; ok {
@@ -485,6 +501,22 @@ func (m *Meter) ensureKeyLocked(channel model.Channel, key model.ChannelKey) *Ke
 	}
 	m.keyStats[id] = stat
 	return stat
+}
+
+func (m *Meter) availableKeyWeightLocked(channel model.Channel, now time.Time) float64 {
+	total := 0.0
+	for _, key := range channel.ActiveKeys() {
+		stat := m.ensureKeyLocked(channel, key)
+		if stat.Status == KeyStatusUnavailable || stat.CooldownUntil.After(now) {
+			continue
+		}
+		weight := float64(key.Weight)
+		if weight <= 0 {
+			weight = 1
+		}
+		total += weight
+	}
+	return total
 }
 
 func keyMetricKey(channelID string, keyID string) string {

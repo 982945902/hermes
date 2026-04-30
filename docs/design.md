@@ -222,14 +222,25 @@ Tiering:
 - `unstable`: lower score, high latency, or degraded success rate
 - `unavailable`: three consecutive failures or very low EWMA success rate
 
-Routing uses a Gaussian race:
+Routing strategy is configurable with `ROUTING_STRATEGY`; default is `p2c` (Power of Two Choices). Supported strategies:
 
 ```text
-sample = score + normal(0, tier_sigma)
-effective = sample * sqrt(static_weight) + static_priority * 0.02
+p2c      weighted two-choice sampling, then compare noisy route utility
+weighted weighted random by score and capacity
+softmax  temperature sampling over route utility
+bucket   score bucket sampling: excellent / good / watch
+bandit   UCB-style exploration bonus
 ```
 
-The highest effective sample is tried first. This behaves like a normal-distribution-based exploration policy: better channel/model routes win more often, but lower-scored routes still receive limited opportunities. `unavailable` channel/model routes are excluded from the main request path.
+Route quality score and route capacity are deliberately separate. The visible barometer `score` represents health only. Routing computes a private selection utility:
+
+```text
+valid_key_weight = sum(weight of enabled, non-cooling channel keys)
+selection_weight = static_channel_weight * valid_key_weight
+utility = score * sqrt(selection_weight) + static_priority * 0.02
+```
+
+This means a channel with more valid upstream tokens can receive more traffic, but with diminishing returns. More keys improve capacity; they do not hide poor latency, failures, or an `unavailable` tier. Routes with no currently available channel key are excluded from the main request path.
 
 Unavailable channel/model routes are probed with low-probability shadow requests. When a normal request succeeds through a usable route, Hermes may also send the same request to an unavailable route in the background. The shadow response is discarded and only updates barometer metrics. Probe frequency is throttled per channel/model route.
 

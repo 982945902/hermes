@@ -21,6 +21,7 @@ type Config struct {
 	IdentityName      string
 	IdentityEnabled   bool
 	ChannelSyncEvery  time.Duration
+	RoutingStrategy   string
 }
 
 func Load() Config {
@@ -40,6 +41,7 @@ func Load() Config {
 		IdentityName:      env("IDENTITY_NAME", "Hermes AI"),
 		IdentityEnabled:   envBool("IDENTITY_ENABLED", true),
 		ChannelSyncEvery:  envDuration("CHANNEL_SYNC_INTERVAL", 30*time.Second),
+		RoutingStrategy:   env("ROUTING_STRATEGY", "p2c"),
 	}
 }
 
