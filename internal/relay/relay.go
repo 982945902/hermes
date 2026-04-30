@@ -2,15 +2,15 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"math/rand"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/982945902/hermes/internal/health"
 	"github.com/982945902/hermes/internal/model"
 	"github.com/982945902/hermes/internal/provider"
 	"github.com/982945902/hermes/internal/store"
@@ -20,6 +20,7 @@ import (
 type Handler struct {
 	store    *store.Store
 	provider *provider.OpenAICompatible
+	meter    *health.Meter
 }
 
 type chatEnvelope struct {
@@ -27,8 +28,8 @@ type chatEnvelope struct {
 	Stream bool   `json:"stream"`
 }
 
-func NewHandler(store *store.Store, provider *provider.OpenAICompatible) *Handler {
-	return &Handler{store: store, provider: provider}
+func NewHandler(store *store.Store, provider *provider.OpenAICompatible, meter *health.Meter) *Handler {
+	return &Handler{store: store, provider: provider, meter: meter}
 }
 
 func (h *Handler) ListModels(c *gin.Context) {
@@ -75,28 +76,39 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		openAIError(c, http.StatusNotFound, "model is not available")
 		return
 	}
-	orderChannels(channels)
+	ordered := h.meter.Rank(channels)
+	if len(ordered) == 0 {
+		openAIError(c, http.StatusServiceUnavailable, "all matching channels are currently unavailable")
+		return
+	}
 
 	var lastErr error
-	for _, channel := range channels {
+	for _, channel := range ordered {
 		upstreamModel := channel.UpstreamModel(envelope.Model)
 		req, err := h.provider.BuildChatRequest(c.Request.Context(), channel, body, upstreamModel)
 		if err != nil {
 			lastErr = err
 			continue
 		}
+		started := time.Now()
 		resp, err := h.provider.Do(req)
+		latency := time.Since(started)
 		if err != nil {
+			h.meter.Record(channel, latency, 0, false, 0, err.Error())
 			lastErr = err
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			lastErr = copyUpstreamError(c, resp)
+			errText := copyUpstreamError(resp)
+			h.meter.Record(channel, latency, resp.StatusCode, false, 0, errText.Error())
+			lastErr = errText
 			if c.Writer.Written() {
 				return
 			}
 			continue
 		}
+		h.meter.Record(channel, latency, resp.StatusCode, true, estimateQuality(resp), "")
+		h.probeUnavailable(c, channels, channel.ID.Hex(), body, envelope.Model)
 		proxyResponse(c, resp)
 		return
 	}
@@ -106,49 +118,48 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	openAIError(c, http.StatusBadGateway, lastErr.Error())
 }
 
-func orderChannels(channels []model.Channel) {
-	sort.SliceStable(channels, func(i, j int) bool {
-		return channels[i].Priority > channels[j].Priority
-	})
-	for start := 0; start < len(channels); {
-		end := start + 1
-		for end < len(channels) && channels[end].Priority == channels[start].Priority {
-			end++
-		}
-		weightedShuffle(channels[start:end])
-		start = end
+func (h *Handler) probeUnavailable(c *gin.Context, channels []model.Channel, selectedID string, body []byte, modelName string) {
+	probes := h.meter.ProbeCandidates(channels, selectedID)
+	for _, channel := range probes {
+		channel := channel
+		upstreamModel := channel.UpstreamModel(modelName)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			req, err := h.provider.BuildChatRequest(ctx, channel, body, upstreamModel)
+			if err != nil {
+				h.meter.Record(channel, 0, 0, false, 0, err.Error())
+				return
+			}
+			started := time.Now()
+			resp, err := h.provider.Do(req)
+			latency := time.Since(started)
+			if err != nil {
+				h.meter.Record(channel, latency, 0, false, 0, err.Error())
+				return
+			}
+			defer resp.Body.Close()
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 256*1024))
+			success := resp.StatusCode >= 200 && resp.StatusCode < 300
+			errText := ""
+			if !success {
+				errText = resp.Status
+			}
+			h.meter.Record(channel, latency, resp.StatusCode, success, boolQuality(success), errText)
+		}()
 	}
 }
 
-func weightedShuffle(channels []model.Channel) {
-	for i := range channels {
-		j := chooseWeighted(channels[i:])
-		channels[i], channels[i+j] = channels[i+j], channels[i]
+func estimateQuality(resp *http.Response) float64 {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return 0.78
 	}
+	return 0
 }
 
-func chooseWeighted(channels []model.Channel) int {
-	total := 0
-	for _, channel := range channels {
-		weight := channel.Weight
-		if weight <= 0 {
-			weight = 1
-		}
-		total += weight
-	}
-	if total <= 0 {
-		return rand.Intn(len(channels))
-	}
-	pick := rand.Intn(total)
-	for i, channel := range channels {
-		weight := channel.Weight
-		if weight <= 0 {
-			weight = 1
-		}
-		if pick < weight {
-			return i
-		}
-		pick -= weight
+func boolQuality(success bool) float64 {
+	if success {
+		return 0.78
 	}
 	return 0
 }
@@ -180,7 +191,7 @@ func proxyResponse(c *gin.Context, resp *http.Response) {
 	}
 }
 
-func copyUpstreamError(c *gin.Context, resp *http.Response) error {
+func copyUpstreamError(resp *http.Response) error {
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if len(data) == 0 {

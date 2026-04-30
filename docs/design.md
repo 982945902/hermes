@@ -42,6 +42,7 @@ Admin:
 - `POST /api/admin/login`
 - `GET /api/admin/me`
 - `GET /api/status`
+- `GET /api/barometer`
 - `GET /api/channels`
 - `POST /api/channels`
 - `GET /api/channels/:id`
@@ -98,13 +99,52 @@ headers:
 1. `/v1/chat/completions` checks `GATEWAY_API_KEY`.
 2. The handler reads the JSON body and extracts `model`.
 3. Enabled channels whose `models` contain the requested model are loaded from MongoDB.
-4. A channel is selected by priority and weight.
+4. The in-memory barometer ranks channels using recent latency, success rate, quality, static weight, and static priority.
 5. `model` is replaced with `model_mapping[model]` when present.
 6. The request is forwarded to `{base_url}/chat/completions`.
 7. JSON responses and SSE stream responses are passed through to the client.
-8. If an upstream fails before a response is committed, Hermes retries the next matching channel.
+8. Request results update the barometer using EWMA metrics.
+9. If an upstream fails before a response is committed, Hermes retries the next ranked channel.
+
+## Dynamic Barometer
+
+The barometer is intentionally in-memory in the first version. It resets when the process restarts.
+
+Each channel tracks:
+
+- EWMA latency
+- EWMA success rate
+- EWMA quality score
+- Composite score
+- Consecutive failures
+- Runtime tier: `excellent`, `unstable`, or `unavailable`
+
+Composite score:
+
+```text
+latency_score = exp(-latency_ms / 3500)
+score = latency_score * 0.35 + success_rate * 0.40 + quality * 0.25
+```
+
+Quality is currently a proxy signal because Hermes streams responses through without judging semantic content. Successful upstream responses record a neutral-positive quality sample. Later versions can add JSON-format validation, response-shape checks, user feedback, or async judge-model sampling.
+
+Tiering:
+
+- `excellent`: healthy default tier
+- `unstable`: lower score, high latency, or degraded success rate
+- `unavailable`: three consecutive failures or very low EWMA success rate
+
+Routing uses a Gaussian race:
+
+```text
+sample = score + normal(0, tier_sigma)
+effective = sample * sqrt(static_weight) + static_priority * 0.02
+```
+
+The highest effective sample is tried first. This behaves like a normal-distribution-based exploration policy: better channels win more often, but lower-scored channels still receive limited opportunities. `unavailable` channels are excluded from the main request path.
+
+Unavailable channels are probed with low-probability shadow requests. When a normal request succeeds through a usable channel, Hermes may also send the same request to an unavailable channel in the background. The shadow response is discarded and only updates barometer metrics. Probe frequency is throttled per channel.
 
 ## Deployment
 
 Gin serves both API and frontend. In production, build the frontend into `web/dist`; Gin serves it as static files and falls back to `index.html`.
-

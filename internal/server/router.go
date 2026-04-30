@@ -33,6 +33,7 @@ func NewRouter(config config.Config, authService *auth.Service, admin *api.Admin
 		{
 			protected.GET("/admin/me", admin.Me)
 			protected.GET("/status", admin.Status)
+			protected.GET("/barometer", admin.Barometer)
 			protected.GET("/channels", admin.ListChannels)
 			protected.POST("/channels", admin.CreateChannel)
 			protected.GET("/channels/:id", admin.GetChannel)

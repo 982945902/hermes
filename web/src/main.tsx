@@ -2,6 +2,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { Activity, LogOut, Plus, RefreshCw, Save, Settings, Trash2 } from 'lucide-react'
 import {
+  barometer,
   clearToken,
   createChannel,
   deleteChannel,
@@ -14,7 +15,7 @@ import {
   testChannel,
   updateChannel,
 } from './api'
-import type { Channel } from './types'
+import type { BarometerChannel, Channel } from './types'
 import './styles.css'
 
 const presets = {
@@ -154,11 +155,86 @@ function Shell({ username, onLogout }: { username: string; onLogout: () => void 
             </button>
           </div>
         </header>
+        <Barometer />
         <Channels />
         <SettingsPanel />
       </main>
     </div>
   )
+}
+
+function Barometer() {
+  const [channels, setChannels] = React.useState<BarometerChannel[]>([])
+  const [updatedAt, setUpdatedAt] = React.useState('')
+
+  React.useEffect(() => {
+    let mounted = true
+    async function load() {
+      try {
+        const data = await barometer()
+        if (!mounted) return
+        setChannels(data.channels)
+        setUpdatedAt(data.generated_at)
+      } catch {
+        if (mounted) setChannels([])
+      }
+    }
+    load()
+    const timer = window.setInterval(load, 3000)
+    return () => {
+      mounted = false
+      window.clearInterval(timer)
+    }
+  }, [])
+
+  return (
+    <section className="panel barometer">
+      <div className="panel-title">
+        <h2>Dynamic Barometer</h2>
+        <span>{updatedAt ? new Date(updatedAt).toLocaleTimeString() : 'No samples yet'}</span>
+      </div>
+      <div className="barometer-grid">
+        {channels.length === 0 ? (
+          <p className="muted">Metrics appear after traffic or channel tests.</p>
+        ) : (
+          channels.map((channel) => <BarometerCard key={channel.channel_id} channel={channel} />)
+        )}
+      </div>
+    </section>
+  )
+}
+
+function BarometerCard({ channel }: { channel: BarometerChannel }) {
+  const scorePct = Math.round(channel.score * 100)
+  const successPct = Math.round(channel.success_rate * 100)
+  const qualityPct = Math.round(channel.quality * 100)
+  return (
+    <div className={`barometer-card ${channel.tier}`}>
+      <div className="barometer-head">
+        <div>
+          <strong>{channel.name}</strong>
+          <span>{channel.provider}</span>
+        </div>
+        <b>{tierLabel(channel.tier)}</b>
+      </div>
+      <div className="gauge">
+        <div style={{ width: `${scorePct}%` }} />
+      </div>
+      <div className="metrics">
+        <span>Score {scorePct}</span>
+        <span>Success {successPct}%</span>
+        <span>Latency {Math.round(channel.latency_ms)}ms</span>
+        <span>Quality {qualityPct}</span>
+      </div>
+      {channel.last_error ? <p className="row-error">{channel.last_error}</p> : null}
+    </div>
+  )
+}
+
+function tierLabel(tier: BarometerChannel['tier']) {
+  if (tier === 'excellent') return '优质'
+  if (tier === 'unstable') return '不稳定'
+  return '不可用'
 }
 
 function Channels() {
@@ -382,4 +458,3 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </React.StrictMode>,
 )
-

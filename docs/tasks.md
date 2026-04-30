@@ -24,6 +24,10 @@
 - [x] Add channel selection
 - [x] Add JSON passthrough
 - [x] Add SSE passthrough
+- [x] Add in-memory dynamic barometer
+- [x] Add runtime tiering: excellent, unstable, unavailable
+- [x] Add Gaussian-race channel ranking
+- [x] Add unavailable-channel shadow probes
 
 ## Phase 4 - Frontend
 
@@ -33,6 +37,7 @@
 - [x] Add channel list page
 - [x] Add channel editor
 - [x] Add settings/status page
+- [x] Add realtime barometer panel
 
 ## Phase 5 - Verification
 

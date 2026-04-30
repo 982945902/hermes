@@ -17,3 +17,24 @@ export type Channel = {
   updated_at?: string
 }
 
+export type BarometerChannel = {
+  channel_id: string
+  name: string
+  provider: string
+  requests: number
+  success_rate: number
+  latency_ms: number
+  quality: number
+  score: number
+  tier: 'excellent' | 'unstable' | 'unavailable'
+  consecutive_failures: number
+  last_status_code: number
+  last_error?: string
+  last_updated_at?: string
+  last_probe_at?: string
+}
+
+export type BarometerSnapshot = {
+  generated_at: string
+  channels: BarometerChannel[]
+}

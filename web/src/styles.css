@@ -165,6 +165,83 @@ header p {
   align-items: start;
 }
 
+.barometer {
+  margin-bottom: 18px;
+}
+
+.barometer .panel-title span {
+  color: #788293;
+  font-size: 13px;
+}
+
+.barometer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.barometer-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #e3e7ee;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.barometer-card.excellent {
+  border-color: #98d7bd;
+}
+
+.barometer-card.unstable {
+  border-color: #f6c56f;
+}
+
+.barometer-card.unavailable {
+  border-color: #f1a3a3;
+  background: #fffafa;
+}
+
+.barometer-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.barometer-head strong,
+.barometer-head span {
+  display: block;
+}
+
+.barometer-head span {
+  color: #788293;
+  font-size: 13px;
+}
+
+.barometer-head b {
+  font-size: 13px;
+}
+
+.gauge {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #edf0f5;
+}
+
+.gauge div {
+  height: 100%;
+  border-radius: inherit;
+  background: #2457d6;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  color: #4c5564;
+  font-size: 12px;
+}
+
 .panel {
   border: 1px solid #e1e4eb;
   border-radius: 8px;
@@ -312,4 +389,3 @@ pre {
     justify-content: flex-start;
   }
 }
-

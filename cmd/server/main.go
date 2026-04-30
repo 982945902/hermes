@@ -9,6 +9,7 @@ import (
 	"github.com/982945902/hermes/internal/api"
 	"github.com/982945902/hermes/internal/auth"
 	"github.com/982945902/hermes/internal/config"
+	"github.com/982945902/hermes/internal/health"
 	"github.com/982945902/hermes/internal/provider"
 	"github.com/982945902/hermes/internal/relay"
 	"github.com/982945902/hermes/internal/server"
@@ -31,9 +32,10 @@ func main() {
 
 	httpClient := &http.Client{Timeout: cfg.UpstreamTimeout}
 	provider := provider.NewOpenAICompatible(httpClient)
+	meter := health.NewMeter()
 	authService := auth.New(cfg)
-	adminHandler := api.NewAdminHandler(db, authService, provider)
-	relayHandler := relay.NewHandler(db, provider)
+	adminHandler := api.NewAdminHandler(db, authService, provider, meter)
+	relayHandler := relay.NewHandler(db, provider, meter)
 	router := server.NewRouter(cfg, authService, adminHandler, relayHandler)
 
 	log.Printf("hermes listening on :%s", cfg.Port)

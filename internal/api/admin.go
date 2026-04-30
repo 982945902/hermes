@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/982945902/hermes/internal/auth"
+	"github.com/982945902/hermes/internal/health"
 	"github.com/982945902/hermes/internal/model"
 	"github.com/982945902/hermes/internal/provider"
 	"github.com/982945902/hermes/internal/store"
@@ -17,6 +18,7 @@ type AdminHandler struct {
 	store    *store.Store
 	auth     *auth.Service
 	provider *provider.OpenAICompatible
+	meter    *health.Meter
 }
 
 type loginRequest struct {
@@ -24,8 +26,8 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
-func NewAdminHandler(store *store.Store, auth *auth.Service, provider *provider.OpenAICompatible) *AdminHandler {
-	return &AdminHandler{store: store, auth: auth, provider: provider}
+func NewAdminHandler(store *store.Store, auth *auth.Service, provider *provider.OpenAICompatible, meter *health.Meter) *AdminHandler {
+	return &AdminHandler{store: store, auth: auth, provider: provider, meter: meter}
 }
 
 func (h *AdminHandler) Login(c *gin.Context) {
@@ -51,6 +53,10 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		"status": "ok",
 		"time":   time.Now(),
 	})
+}
+
+func (h *AdminHandler) Barometer(c *gin.Context) {
+	c.JSON(http.StatusOK, h.meter.Snapshot())
 }
 
 func (h *AdminHandler) ListChannels(c *gin.Context) {

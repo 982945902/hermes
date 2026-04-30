@@ -1,4 +1,4 @@
-import type { Channel } from './types'
+import type { BarometerSnapshot, Channel } from './types'
 
 const TOKEN_KEY = 'hermes_admin_token'
 
@@ -43,6 +43,10 @@ export async function status() {
   return request<{ status: string; time: string }>('/api/status')
 }
 
+export async function barometer() {
+  return request<BarometerSnapshot>('/api/barometer')
+}
+
 export async function listChannels() {
   return request<{ data: Channel[] }>('/api/channels')
 }
@@ -71,4 +75,3 @@ export async function testChannel(id: string) {
     body: '{}',
   })
 }
-
