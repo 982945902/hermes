@@ -118,23 +118,48 @@ func (m *Meter) Record(channel model.Channel, externalModel string, upstreamMode
 	stat.Tier = computeTier(stat)
 }
 
-func (m *Meter) Snapshot() Snapshot {
+func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	activeRoute := map[string]model.Channel{}
+	filterRoutes := len(activeChannels) > 0
+	if filterRoutes {
+		for _, channel := range activeChannels[0] {
+			channel.Normalize()
+			channelID := channel.ID.Hex()
+			for _, externalModel := range channel.Models {
+				if externalModel == "" {
+					continue
+				}
+				key := metricKey(channelID, externalModel, channel.UpstreamModel(externalModel))
+				activeRoute[key] = channel
+			}
+		}
+	}
+
 	grouped := map[string]*ChannelSnapshot{}
-	for _, stat := range m.stats {
+	for key, stat := range m.stats {
+		activeChannel, hasActiveFilter := activeRoute[key]
+		if filterRoutes && !hasActiveFilter {
+			continue
+		}
+		item := *stat
+		if hasActiveFilter {
+			item.Name = activeChannel.Name
+			item.Provider = activeChannel.Provider
+		}
 		channel, ok := grouped[stat.ChannelID]
 		if !ok {
 			channel = &ChannelSnapshot{
-				ChannelID: stat.ChannelID,
-				Name:      stat.Name,
-				Provider:  stat.Provider,
+				ChannelID: item.ChannelID,
+				Name:      item.Name,
+				Provider:  item.Provider,
 				Models:    []ModelStats{},
 			}
-			grouped[stat.ChannelID] = channel
+			grouped[item.ChannelID] = channel
 		}
-		channel.Models = append(channel.Models, *stat)
+		channel.Models = append(channel.Models, item)
 	}
 
 	channels := make([]ChannelSnapshot, 0, len(grouped))

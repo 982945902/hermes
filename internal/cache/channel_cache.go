@@ -100,6 +100,14 @@ func (c *ChannelCache) FindByModel(modelName string) []model.Channel {
 	return out
 }
 
+func (c *ChannelCache) ListChannels() []model.Channel {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]model.Channel, len(c.all))
+	copy(out, c.all)
+	return out
+}
+
 func (c *ChannelCache) ListModels() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

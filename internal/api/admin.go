@@ -73,7 +73,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 }
 
 func (h *AdminHandler) Barometer(c *gin.Context) {
-	c.JSON(http.StatusOK, h.meter.Snapshot())
+	c.JSON(http.StatusOK, h.meter.Snapshot(h.cache.ListChannels()))
 }
 
 func (h *AdminHandler) ListChannels(c *gin.Context) {
