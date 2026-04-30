@@ -36,6 +36,7 @@ type channelTestRequest struct {
 }
 
 type fetchModelsRequest struct {
+	ID           string            `json:"id"`
 	Provider     string            `json:"provider"`
 	BaseURL      string            `json:"base_url"`
 	APIKey       string            `json:"api_key"`
@@ -214,10 +215,19 @@ func (h *AdminHandler) FetchModels(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
+	apiKey := req.APIKey
+	if req.ID != "" && (strings.TrimSpace(apiKey) == "" || strings.Contains(apiKey, "********")) {
+		existing, err := h.store.GetChannel(c.Request.Context(), req.ID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
+			return
+		}
+		apiKey = existing.APIKey
+	}
 	channel := model.Channel{
 		Provider:     req.Provider,
 		BaseURL:      req.BaseURL,
-		APIKey:       req.APIKey,
+		APIKey:       apiKey,
 		ExtraHeaders: req.ExtraHeaders,
 	}
 	channel.Normalize()

@@ -415,7 +415,7 @@ function Editor({
   onRunTest,
 }: {
   channel: Channel
-  setChannel: (channel: Channel) => void
+  setChannel: React.Dispatch<React.SetStateAction<Channel>>
   onSave: () => void
   message: string
   testPrompt: string
@@ -447,7 +447,7 @@ function Editor({
   }, [channel.models, channel.model_mapping, externalDrafts, modelSearch, upstreamModels])
 
   function patch(update: Partial<Channel>) {
-    setChannel({ ...channel, ...update })
+    setChannel((current) => ({ ...current, ...update }))
   }
 
   React.useEffect(() => {
@@ -467,6 +467,7 @@ function Editor({
     setFetching(true)
     try {
       const result = await fetchUpstreamModels({
+        id: channel.id,
         provider: channel.provider,
         base_url: channel.base_url,
         api_key: channel.api_key,
@@ -487,8 +488,12 @@ function Editor({
     }
   }
 
+  function findExternalIn(source: Channel, upstreamModel: string) {
+    return source.models.find((modelName) => (source.model_mapping[modelName] || modelName) === upstreamModel) || ''
+  }
+
   function findExternalModel(upstreamModel: string) {
-    return channel.models.find((modelName) => (channel.model_mapping[modelName] || modelName) === upstreamModel) || ''
+    return findExternalIn(channel, upstreamModel)
   }
 
   function externalValue(upstreamModel: string) {
@@ -497,34 +502,39 @@ function Editor({
 
   function setExternalValue(upstreamModel: string, externalModel: string) {
     setExternalDrafts((drafts) => ({ ...drafts, [upstreamModel]: externalModel }))
-    const existingExternal = findExternalModel(upstreamModel)
-    if (!existingExternal) return
-    const nextExternal = externalModel.trim()
-    const nextModels = channel.models.filter((item) => item !== existingExternal)
-    const nextMapping = { ...channel.model_mapping }
-    delete nextMapping[existingExternal]
-    if (nextExternal) {
-      nextModels.push(nextExternal)
-      nextMapping[nextExternal] = upstreamModel
-    }
-    patch({ models: Array.from(new Set(nextModels)), model_mapping: nextMapping })
+    setChannel((current) => {
+      const existingExternal = findExternalIn(current, upstreamModel)
+      if (!existingExternal) return current
+      const nextExternal = externalModel.trim()
+      const nextModels = current.models.filter((item) => item !== existingExternal)
+      const nextMapping = { ...current.model_mapping }
+      delete nextMapping[existingExternal]
+      if (nextExternal) {
+        nextModels.push(nextExternal)
+        nextMapping[nextExternal] = upstreamModel
+      }
+      return { ...current, models: Array.from(new Set(nextModels)), model_mapping: nextMapping }
+    })
   }
 
   function toggleModel(upstreamModel: string, checked: boolean) {
-    const existingExternal = findExternalModel(upstreamModel)
-    const externalModel = externalValue(upstreamModel).trim()
-    const nextModels = channel.models.filter((item) => item !== existingExternal)
-    const nextMapping = { ...channel.model_mapping }
-    if (existingExternal) delete nextMapping[existingExternal]
-    if (checked) {
-      if (!externalModel) {
-        setModelError('请填写对外模型名称')
-        return
+    setModelError('')
+    setChannel((current) => {
+      const existingExternal = findExternalIn(current, upstreamModel)
+      const externalModel = (externalDrafts[upstreamModel] || existingExternal || upstreamModel).trim()
+      const nextModels = current.models.filter((item) => item !== existingExternal)
+      const nextMapping = { ...current.model_mapping }
+      if (existingExternal) delete nextMapping[existingExternal]
+      if (checked) {
+        if (!externalModel) {
+          setModelError('请填写对外模型名称')
+          return current
+        }
+        nextModels.push(externalModel)
+        nextMapping[externalModel] = upstreamModel
       }
-      nextModels.push(externalModel)
-      nextMapping[externalModel] = upstreamModel
-    }
-    patch({ models: Array.from(new Set(nextModels)), model_mapping: nextMapping })
+      return { ...current, models: Array.from(new Set(nextModels)), model_mapping: nextMapping }
+    })
   }
 
   return (

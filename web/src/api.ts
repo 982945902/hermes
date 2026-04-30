@@ -77,6 +77,7 @@ export async function testChannel(id: string, model: string, prompt: string) {
 }
 
 export async function fetchUpstreamModels(input: {
+  id?: string
   provider: string
   base_url: string
   api_key?: string
