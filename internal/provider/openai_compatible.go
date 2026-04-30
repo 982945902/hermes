@@ -53,6 +53,38 @@ func (p *OpenAICompatible) Do(req *http.Request) (*http.Response, error) {
 	return p.client.Do(req)
 }
 
+func (p *OpenAICompatible) FetchModels(ctx context.Context, channel model.Channel) ([]string, error) {
+	url := strings.TrimRight(channel.BaseURL, "/") + "/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+channel.APIKey)
+	for key, value := range channel.ExtraHeaders {
+		if strings.TrimSpace(key) != "" && value != "" {
+			req.Header.Set(key, value)
+		}
+	}
+	if channel.Provider == model.ProviderOpenRouter {
+		if req.Header.Get("HTTP-Referer") == "" {
+			req.Header.Set("HTTP-Referer", "https://github.com/982945902/hermes")
+		}
+		if req.Header.Get("X-Title") == "" {
+			req.Header.Set("X-Title", "Hermes")
+		}
+	}
+	resp, err := p.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("upstream returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return parseModelList(data), nil
+}
+
 func (p *OpenAICompatible) Test(ctx context.Context, channel model.Channel, prompt string) (string, error) {
 	if len(channel.Models) == 0 {
 		return "", fmt.Errorf("channel has no models")
@@ -121,6 +153,24 @@ func extractAssistantContent(data []byte) string {
 		}
 	}
 	return strings.TrimSpace(string(data))
+}
+
+func parseModelList(data []byte) []string {
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil
+	}
+	models := make([]string, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		if item.ID != "" {
+			models = append(models, item.ID)
+		}
+	}
+	return models
 }
 
 func rewriteModel(body []byte, upstreamModel string) ([]byte, error) {

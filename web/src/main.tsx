@@ -6,6 +6,7 @@ import {
   clearToken,
   createChannel,
   deleteChannel,
+  fetchUpstreamModels,
   getToken,
   listChannels,
   login,
@@ -116,17 +117,17 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
   return (
     <main className="login-page">
       <form className="login-panel" onSubmit={submit}>
-        <h1>Hermes</h1>
+        <h1>Hermes 管理台</h1>
         <label>
-          Username
+          用户名
           <input value={username} onChange={(e) => setUsername(e.target.value)} />
         </label>
         <label>
-          Password
+          密码
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
         </label>
         {error ? <p className="error">{error}</p> : null}
-        <button disabled={loading}>{loading ? 'Signing in' : 'Sign in'}</button>
+        <button disabled={loading}>{loading ? '登录中' : '登录'}</button>
       </form>
     </main>
   )
@@ -138,15 +139,15 @@ function Shell({ username, onLogout }: { username: string; onLogout: () => void 
       <aside>
         <div className="brand">Hermes</div>
         <nav>
-          <a href="#channels">Channels</a>
-          <a href="#settings">Settings</a>
+          <a href="#channels">渠道</a>
+          <a href="#settings">设置</a>
         </nav>
       </aside>
       <main>
         <header>
           <div>
-            <h1>Channels</h1>
-            <p>Configure OpenAI-compatible upstreams for the gateway.</p>
+            <h1>渠道管理</h1>
+            <p>配置上游渠道、模型映射，并让晴雨表动态选择最合适的线路。</p>
           </div>
           <div className="user">
             <span>{username || 'admin'}</span>
@@ -190,12 +191,12 @@ function Barometer() {
   return (
     <section className="panel barometer">
       <div className="panel-title">
-        <h2>Dynamic Barometer</h2>
-        <span>{updatedAt ? new Date(updatedAt).toLocaleTimeString() : 'No samples yet'}</span>
+        <h2>动态晴雨表</h2>
+        <span>{updatedAt ? new Date(updatedAt).toLocaleTimeString() : '暂无样本'}</span>
       </div>
       <div className="barometer-grid">
         {channels.length === 0 ? (
-          <p className="muted">Metrics appear after traffic or channel tests.</p>
+          <p className="muted">请求或渠道测试后会显示实时指标。</p>
         ) : (
           channels.map((channel) => <BarometerCard key={channel.channel_id} channel={channel} />)
         )}
@@ -221,10 +222,10 @@ function BarometerCard({ channel }: { channel: BarometerChannel }) {
         <div style={{ width: `${scorePct}%` }} />
       </div>
       <div className="metrics">
-        <span>Score {scorePct}</span>
-        <span>Success {successPct}%</span>
-        <span>Latency {Math.round(channel.latency_ms)}ms</span>
-        <span>Quality {qualityPct}</span>
+        <span>评分 {scorePct}</span>
+        <span>成功率 {successPct}%</span>
+        <span>耗时 {Math.round(channel.latency_ms)}ms</span>
+        <span>质量 {qualityPct}</span>
       </div>
       {channel.last_error ? <p className="row-error">{channel.last_error}</p> : null}
     </div>
@@ -273,7 +274,7 @@ function Channels() {
     setTestResponse('')
     try {
       const result = await testChannel(channel.id, testPrompt)
-      setMessage(`${channel.name} is healthy`)
+      setMessage(`${channel.name} 测试成功`)
       setTestResponse(result.response || '(empty response)')
       await load()
     } catch (err) {
@@ -286,8 +287,8 @@ function Channels() {
     <section id="channels" className="section-grid">
       <div className="panel">
         <div className="panel-title">
-          <h2>Channel Pool</h2>
-          <button className="icon-button" onClick={() => setEditing(emptyChannel())} title="New channel">
+          <h2>渠道池</h2>
+          <button className="icon-button" onClick={() => setEditing(emptyChannel())} title="新建渠道">
             <Plus size={18} />
           </button>
         </div>
@@ -298,13 +299,13 @@ function Channels() {
                 <strong>{channel.name}</strong>
                 <span>{channel.provider}</span>
               </div>
-              <div>{channel.models.length} models</div>
-              <div className={channel.enabled ? 'ok' : 'muted'}>{channel.enabled ? 'Enabled' : 'Disabled'}</div>
+              <div>{channel.models.length} 个模型</div>
+              <div className={channel.enabled ? 'ok' : 'muted'}>{channel.enabled ? '启用' : '停用'}</div>
               <div className="actions">
-                <button className="icon-button" onClick={() => setEditing(channel)} title="Edit">
+                <button className="icon-button" onClick={() => setEditing(channel)} title="编辑">
                   <Settings size={17} />
                 </button>
-                <button className="icon-button" onClick={() => runTest(channel)} title="Test">
+                <button className="icon-button" onClick={() => runTest(channel)} title="测试">
                   <Activity size={17} />
                 </button>
                 <button
@@ -315,7 +316,7 @@ function Channels() {
                       await load()
                     }
                   }}
-                  title="Delete"
+                  title="删除"
                 >
                   <Trash2 size={17} />
                 </button>
@@ -355,6 +356,14 @@ function Editor({
   setTestPrompt: (value: string) => void
   testResponse: string
 }) {
+  const [modelSearch, setModelSearch] = React.useState('')
+  const [modelError, setModelError] = React.useState('')
+  const [fetching, setFetching] = React.useState(false)
+  const availableModels = React.useMemo(() => {
+    const set = new Set<string>([...channel.models, ...Object.values(channel.model_mapping || {})])
+    return Array.from(set).filter((item) => item.toLowerCase().includes(modelSearch.toLowerCase()))
+  }, [channel.models, channel.model_mapping, modelSearch])
+
   function patch(update: Partial<Channel>) {
     setChannel({ ...channel, ...update })
   }
@@ -364,15 +373,46 @@ function Editor({
     patch({ provider, base_url: preset.base_url, extra_headers: preset.extra_headers })
   }
 
+  async function loadModels() {
+    setModelError('')
+    setFetching(true)
+    try {
+      const result = await fetchUpstreamModels({
+        provider: channel.provider,
+        base_url: channel.base_url,
+        api_key: channel.api_key,
+        extra_headers: channel.extra_headers || {},
+      })
+      const nextMapping = { ...channel.model_mapping }
+      for (const modelName of result.data) {
+        if (!nextMapping[modelName]) nextMapping[modelName] = modelName
+      }
+      patch({ models: result.data, model_mapping: nextMapping })
+    } catch (err) {
+      setModelError(err instanceof Error ? err.message : '拉取模型失败')
+    } finally {
+      setFetching(false)
+    }
+  }
+
+  function toggleModel(modelName: string, checked: boolean) {
+    const models = checked ? Array.from(new Set([...channel.models, modelName])) : channel.models.filter((item) => item !== modelName)
+    patch({ models })
+  }
+
+  function setMapping(modelName: string, upstream: string) {
+    patch({ model_mapping: { ...channel.model_mapping, [modelName]: upstream } })
+  }
+
   return (
     <div className="panel editor">
-      <h2>{channel.id ? 'Edit Channel' : 'New Channel'}</h2>
+      <h2>{channel.id ? '编辑渠道' : '新建渠道'}</h2>
       <label>
-        Name
+        渠道名称
         <input value={channel.name} onChange={(e) => patch({ name: e.target.value })} />
       </label>
       <label>
-        Provider
+        渠道类型
         <select value={channel.provider} onChange={(e) => applyProvider(e.target.value)}>
           <option value="openrouter">OpenRouter</option>
           <option value="doubao_coding">Doubao Coding Plan</option>
@@ -387,20 +427,43 @@ function Editor({
         API Key
         <input value={channel.api_key || ''} onChange={(e) => patch({ api_key: e.target.value })} />
       </label>
-      <label>
-        Models
-        <textarea
-          value={channel.models.join('\n')}
-          onChange={(e) => patch({ models: e.target.value.split('\n').map((item) => item.trim()).filter(Boolean) })}
-        />
-      </label>
-      <label>
-        Model Mapping JSON
-        <textarea
-          value={JSON.stringify(channel.model_mapping, null, 2)}
-          onChange={(e) => patch({ model_mapping: parseObject(e.target.value) })}
-        />
-      </label>
+      <div className="model-picker">
+        <div className="model-toolbar">
+          <div>
+            <h3>模型映射</h3>
+            <p>先拉取上游模型，勾选要对外暴露的模型；右侧可填写对外模型对应的真实上游模型。</p>
+          </div>
+          <button onClick={loadModels} disabled={fetching || !channel.base_url || !channel.api_key}>
+            <RefreshCw size={17} />
+            {fetching ? '拉取中' : '拉取模型'}
+          </button>
+        </div>
+        <input placeholder="搜索模型..." value={modelSearch} onChange={(e) => setModelSearch(e.target.value)} />
+        {modelError ? <p className="error">{modelError}</p> : null}
+        <div className="model-list">
+          {availableModels.length === 0 ? (
+            <p className="muted">填写 URL 和 Key 后点击拉取模型。</p>
+          ) : (
+            availableModels.map((modelName) => (
+              <div className="model-item" key={modelName}>
+                <label className="model-check">
+                  <input
+                    type="checkbox"
+                    checked={channel.models.includes(modelName)}
+                    onChange={(e) => toggleModel(modelName, e.target.checked)}
+                  />
+                  <span>{modelName}</span>
+                </label>
+                <input
+                  value={channel.model_mapping[modelName] || modelName}
+                  onChange={(e) => setMapping(modelName, e.target.value)}
+                  placeholder="上游真实模型"
+                />
+              </div>
+            ))
+          )}
+        </div>
+      </div>
       <label>
         Extra Headers JSON
         <textarea
@@ -408,27 +471,19 @@ function Editor({
           onChange={(e) => patch({ extra_headers: parseObject(e.target.value) as Record<string, string> })}
         />
       </label>
-      <div className="inline">
-        <label>
-          Priority
-          <input type="number" value={channel.priority} onChange={(e) => patch({ priority: Number(e.target.value) })} />
-        </label>
-        <label>
-          Weight
-          <input type="number" value={channel.weight} onChange={(e) => patch({ weight: Number(e.target.value) })} />
-        </label>
+      <div className="inline single">
         <label className="check">
           <input type="checkbox" checked={channel.enabled} onChange={(e) => patch({ enabled: e.target.checked })} />
-          Enabled
+          启用渠道
         </label>
       </div>
       <button className="primary" onClick={onSave}>
         <Save size={17} />
-        Save
+        保存渠道
       </button>
       {message ? <p className="message">{message}</p> : null}
       <div className="test-box">
-        <h3>Channel Test Prompt</h3>
+        <h3>渠道对话测试</h3>
         <textarea value={testPrompt} onChange={(e) => setTestPrompt(e.target.value)} />
         {testResponse ? <pre>{testResponse}</pre> : null}
       </div>
@@ -440,7 +495,7 @@ function SettingsPanel() {
   const [data, setData] = React.useState('')
   return (
     <section id="settings" className="panel settings-panel">
-      <h2>Settings</h2>
+      <h2>设置</h2>
       <button
         onClick={async () => {
           const result = await status()
@@ -448,7 +503,7 @@ function SettingsPanel() {
         }}
       >
         <RefreshCw size={17} />
-        Refresh status
+        刷新状态
       </button>
       {data ? <pre>{data}</pre> : null}
     </section>

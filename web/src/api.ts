@@ -75,3 +75,15 @@ export async function testChannel(id: string, prompt: string) {
     body: JSON.stringify({ prompt }),
   })
 }
+
+export async function fetchUpstreamModels(input: {
+  provider: string
+  base_url: string
+  api_key?: string
+  extra_headers: Record<string, string>
+}) {
+  return request<{ data: string[] }>('/api/channels/fetch-models', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}

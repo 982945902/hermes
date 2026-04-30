@@ -32,6 +32,13 @@ type channelTestRequest struct {
 	Prompt string `json:"prompt"`
 }
 
+type fetchModelsRequest struct {
+	Provider     string            `json:"provider"`
+	BaseURL      string            `json:"base_url"`
+	APIKey       string            `json:"api_key"`
+	ExtraHeaders map[string]string `json:"extra_headers"`
+}
+
 func NewAdminHandler(store *store.Store, channelCache *cache.ChannelCache, auth *auth.Service, provider *provider.OpenAICompatible, meter *health.Meter) *AdminHandler {
 	return &AdminHandler{store: store, cache: channelCache, auth: auth, provider: provider, meter: meter}
 }
@@ -164,6 +171,29 @@ func (h *AdminHandler) TestChannel(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "response": result})
+}
+
+func (h *AdminHandler) FetchModels(c *gin.Context) {
+	var req fetchModelsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	channel := model.Channel{
+		Provider:     req.Provider,
+		BaseURL:      req.BaseURL,
+		APIKey:       req.APIKey,
+		ExtraHeaders: req.ExtraHeaders,
+	}
+	channel.Normalize()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	models, err := h.provider.FetchModels(ctx, channel)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": models})
 }
 
 func validateChannel(channel *model.Channel) error {

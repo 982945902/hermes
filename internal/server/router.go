@@ -43,6 +43,7 @@ func NewRouter(config config.Config, authService *auth.Service, admin *api.Admin
 			protected.PUT("/channels/:id", admin.UpdateChannel)
 			protected.DELETE("/channels/:id", admin.DeleteChannel)
 			protected.POST("/channels/:id/test", admin.TestChannel)
+			protected.POST("/channels/fetch-models", admin.FetchModels)
 		}
 	}
 
