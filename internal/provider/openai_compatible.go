@@ -125,9 +125,12 @@ func extractAssistantContent(data []byte) string {
 	var payload struct {
 		Choices []struct {
 			Message struct {
-				Content any `json:"content"`
+				Content          any    `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				Refusal          string `json:"refusal"`
 			} `json:"message"`
-			Text string `json:"text"`
+			Text         string `json:"text"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
@@ -139,9 +142,17 @@ func extractAssistantContent(data []byte) string {
 	if payload.Choices[0].Text != "" {
 		return payload.Choices[0].Text
 	}
+	if payload.Choices[0].Message.ReasoningContent != "" {
+		return payload.Choices[0].Message.ReasoningContent
+	}
+	if payload.Choices[0].Message.Refusal != "" {
+		return payload.Choices[0].Message.Refusal
+	}
 	switch content := payload.Choices[0].Message.Content.(type) {
 	case string:
-		return content
+		if strings.TrimSpace(content) != "" {
+			return content
+		}
 	case []any:
 		var b strings.Builder
 		for _, item := range content {
@@ -155,7 +166,14 @@ func extractAssistantContent(data []byte) string {
 			return b.String()
 		}
 	}
-	return strings.TrimSpace(string(data))
+	raw := strings.TrimSpace(string(data))
+	if len(raw) > 4096 {
+		raw = raw[:4096] + "...(truncated)"
+	}
+	if payload.Choices[0].FinishReason != "" {
+		return "上游返回了空内容，finish_reason=" + payload.Choices[0].FinishReason + "\n\n原始响应：\n" + raw
+	}
+	return raw
 }
 
 func parseModelList(data []byte) []string {
