@@ -53,34 +53,74 @@ func (p *OpenAICompatible) Do(req *http.Request) (*http.Response, error) {
 	return p.client.Do(req)
 }
 
-func (p *OpenAICompatible) Test(ctx context.Context, channel model.Channel) error {
+func (p *OpenAICompatible) Test(ctx context.Context, channel model.Channel, prompt string) (string, error) {
 	if len(channel.Models) == 0 {
-		return fmt.Errorf("channel has no models")
+		return "", fmt.Errorf("channel has no models")
+	}
+	if strings.TrimSpace(prompt) == "" {
+		prompt = "请用一句话回复：Hermes channel test ok"
 	}
 	modelName := channel.UpstreamModel(channel.Models[0])
 	body, err := json.Marshal(map[string]any{
 		"model":      modelName,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 1,
+		"messages":   []map[string]string{{"role": "user", "content": prompt}},
+		"max_tokens": 256,
 		"stream":     false,
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	req, err := p.BuildChatRequest(ctx, channel, body, modelName)
 	if err != nil {
-		return err
+		return "", err
 	}
 	resp, err := p.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("upstream returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return "", fmt.Errorf("upstream returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
-	return nil
+	return extractAssistantContent(data), nil
+}
+
+func extractAssistantContent(data []byte) string {
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Content any `json:"content"`
+			} `json:"message"`
+			Text string `json:"text"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return strings.TrimSpace(string(data))
+	}
+	if len(payload.Choices) == 0 {
+		return strings.TrimSpace(string(data))
+	}
+	if payload.Choices[0].Text != "" {
+		return payload.Choices[0].Text
+	}
+	switch content := payload.Choices[0].Message.Content.(type) {
+	case string:
+		return content
+	case []any:
+		var b strings.Builder
+		for _, item := range content {
+			if part, ok := item.(map[string]any); ok {
+				if text, _ := part["text"].(string); text != "" {
+					b.WriteString(text)
+				}
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func rewriteModel(body []byte, upstreamModel string) ([]byte, error) {

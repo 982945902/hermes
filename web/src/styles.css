@@ -350,6 +350,23 @@ header p {
   overflow-wrap: anywhere;
 }
 
+.test-box {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid #eceff4;
+  padding-top: 12px;
+}
+
+.test-box h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.test-box pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .error {
   margin: 0;
   color: #b42318;

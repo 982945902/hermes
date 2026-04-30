@@ -69,9 +69,9 @@ export async function deleteChannel(id: string) {
   return request<void>(`/api/channels/${id}`, { method: 'DELETE' })
 }
 
-export async function testChannel(id: string) {
-  return request<{ success: boolean; error?: string }>(`/api/channels/${id}/test`, {
+export async function testChannel(id: string, prompt: string) {
+  return request<{ success: boolean; response?: string; error?: string }>(`/api/channels/${id}/test`, {
     method: 'POST',
-    body: '{}',
+    body: JSON.stringify({ prompt }),
   })
 }

@@ -241,6 +241,8 @@ function Channels() {
   const [channels, setChannels] = React.useState<Channel[]>([])
   const [editing, setEditing] = React.useState<Channel>(emptyChannel())
   const [message, setMessage] = React.useState('')
+  const [testPrompt, setTestPrompt] = React.useState('请用一句话回复：Hermes channel test ok')
+  const [testResponse, setTestResponse] = React.useState('')
 
   async function load() {
     const data = await listChannels()
@@ -268,9 +270,11 @@ function Channels() {
   async function runTest(channel: Channel) {
     if (!channel.id) return
     setMessage(`Testing ${channel.name}`)
+    setTestResponse('')
     try {
-      await testChannel(channel.id)
+      const result = await testChannel(channel.id, testPrompt)
       setMessage(`${channel.name} is healthy`)
+      setTestResponse(result.response || '(empty response)')
       await load()
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Test failed')
@@ -321,7 +325,15 @@ function Channels() {
           ))}
         </div>
       </div>
-      <Editor channel={editing} setChannel={setEditing} onSave={save} message={message} />
+      <Editor
+        channel={editing}
+        setChannel={setEditing}
+        onSave={save}
+        message={message}
+        testPrompt={testPrompt}
+        setTestPrompt={setTestPrompt}
+        testResponse={testResponse}
+      />
     </section>
   )
 }
@@ -331,11 +343,17 @@ function Editor({
   setChannel,
   onSave,
   message,
+  testPrompt,
+  setTestPrompt,
+  testResponse,
 }: {
   channel: Channel
   setChannel: (channel: Channel) => void
   onSave: () => void
   message: string
+  testPrompt: string
+  setTestPrompt: (value: string) => void
+  testResponse: string
 }) {
   function patch(update: Partial<Channel>) {
     setChannel({ ...channel, ...update })
@@ -409,6 +427,11 @@ function Editor({
         Save
       </button>
       {message ? <p className="message">{message}</p> : null}
+      <div className="test-box">
+        <h3>Channel Test Prompt</h3>
+        <textarea value={testPrompt} onChange={(e) => setTestPrompt(e.target.value)} />
+        {testResponse ? <pre>{testResponse}</pre> : null}
+      </div>
     </div>
   )
 }

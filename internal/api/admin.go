@@ -26,6 +26,10 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+type channelTestRequest struct {
+	Prompt string `json:"prompt"`
+}
+
 func NewAdminHandler(store *store.Store, auth *auth.Service, provider *provider.OpenAICompatible, meter *health.Meter) *AdminHandler {
 	return &AdminHandler{store: store, auth: auth, provider: provider, meter: meter}
 }
@@ -138,9 +142,11 @@ func (h *AdminHandler) TestChannel(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
 		return
 	}
+	var req channelTestRequest
+	_ = c.ShouldBindJSON(&req)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
-	testErr := h.provider.Test(ctx, *channel)
+	result, testErr := h.provider.Test(ctx, *channel, req.Prompt)
 	lastError := ""
 	if testErr != nil {
 		lastError = testErr.Error()
@@ -150,7 +156,7 @@ func (h *AdminHandler) TestChannel(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"success": false, "error": lastError})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	c.JSON(http.StatusOK, gin.H{"success": true, "response": result})
 }
 
 func validateChannel(channel *model.Channel) error {
