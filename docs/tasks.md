@@ -28,6 +28,9 @@
 - [x] Add runtime tiering: excellent, unstable, unavailable
 - [x] Add Gaussian-race channel ranking
 - [x] Add unavailable-channel shadow probes
+- [x] Add identity guard request detection
+- [x] Add identity guard system prompt injection
+- [x] Add response and stream sanitization
 
 ## Phase 4 - Frontend
 

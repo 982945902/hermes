@@ -18,6 +18,8 @@ type Config struct {
 	GatewayAPIKey     string
 	FrontendDist      string
 	UpstreamTimeout   time.Duration
+	IdentityName      string
+	IdentityEnabled   bool
 }
 
 func Load() Config {
@@ -34,6 +36,8 @@ func Load() Config {
 		GatewayAPIKey:     env("GATEWAY_API_KEY", ""),
 		FrontendDist:      env("FRONTEND_DIST", "web/dist"),
 		UpstreamTimeout:   120 * time.Second,
+		IdentityName:      env("IDENTITY_NAME", "Hermes AI"),
+		IdentityEnabled:   envBool("IDENTITY_ENABLED", true),
 	}
 }
 
@@ -43,6 +47,14 @@ func env(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func envBool(key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if value == "" {
+		return fallback
+	}
+	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
 func loadDotEnv(path string) {

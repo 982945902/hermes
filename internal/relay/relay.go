@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/982945902/hermes/internal/health"
+	"github.com/982945902/hermes/internal/identity"
 	"github.com/982945902/hermes/internal/model"
 	"github.com/982945902/hermes/internal/provider"
 	"github.com/982945902/hermes/internal/store"
@@ -21,6 +22,7 @@ type Handler struct {
 	store    *store.Store
 	provider *provider.OpenAICompatible
 	meter    *health.Meter
+	guard    identity.Guard
 }
 
 type chatEnvelope struct {
@@ -28,8 +30,8 @@ type chatEnvelope struct {
 	Stream bool   `json:"stream"`
 }
 
-func NewHandler(store *store.Store, provider *provider.OpenAICompatible, meter *health.Meter) *Handler {
-	return &Handler{store: store, provider: provider, meter: meter}
+func NewHandler(store *store.Store, provider *provider.OpenAICompatible, meter *health.Meter, guard identity.Guard) *Handler {
+	return &Handler{store: store, provider: provider, meter: meter, guard: guard}
 }
 
 func (h *Handler) ListModels(c *gin.Context) {
@@ -64,6 +66,24 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	}
 	if strings.TrimSpace(envelope.Model) == "" {
 		openAIError(c, http.StatusBadRequest, "model is required")
+		return
+	}
+	if h.guard.IsProbeRequest(body) {
+		if envelope.Stream {
+			c.Header("Content-Type", "text/event-stream")
+			c.Status(http.StatusOK)
+			_, _ = c.Writer.Write(h.guard.FixedStreamReply())
+			if flusher, ok := c.Writer.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			return
+		}
+		c.JSON(http.StatusOK, h.guard.FixedReply())
+		return
+	}
+	body, err = h.guard.InjectSystemPrompt(body)
+	if err != nil {
+		openAIError(c, http.StatusBadRequest, "failed to inject identity guard")
 		return
 	}
 
@@ -109,7 +129,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 		h.meter.Record(channel, latency, resp.StatusCode, true, estimateQuality(resp), "")
 		h.probeUnavailable(c, channels, channel.ID.Hex(), body, envelope.Model)
-		proxyResponse(c, resp)
+		proxyResponse(c, resp, h.guard)
 		return
 	}
 	if lastErr == nil {
@@ -164,7 +184,7 @@ func boolQuality(success bool) float64 {
 	return 0
 }
 
-func proxyResponse(c *gin.Context, resp *http.Response) {
+func proxyResponse(c *gin.Context, resp *http.Response, guard identity.Guard) {
 	defer resp.Body.Close()
 	for key, values := range resp.Header {
 		if strings.EqualFold(key, "Content-Length") {
@@ -175,18 +195,34 @@ func proxyResponse(c *gin.Context, resp *http.Response) {
 		}
 	}
 	c.Status(resp.StatusCode)
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		data, _ := io.ReadAll(resp.Body)
+		_, _ = c.Writer.Write(guard.SanitizeJSON(data))
+		return
+	}
 	flusher, canFlush := c.Writer.(http.Flusher)
+	sanitizer := guard.NewStreamSanitizer()
 	buffer := make([]byte, 32*1024)
 	for {
 		n, readErr := resp.Body.Read(buffer)
 		if n > 0 {
-			_, _ = c.Writer.Write(buffer[:n])
-			if canFlush {
+			out := sanitizer.Write(buffer[:n])
+			if len(out) > 0 {
+				_, _ = c.Writer.Write(out)
+			}
+			if canFlush && len(out) > 0 {
 				flusher.Flush()
 			}
 		}
 		if readErr != nil {
 			break
+		}
+	}
+	if out := sanitizer.Flush(); len(out) > 0 {
+		_, _ = c.Writer.Write(out)
+		if canFlush {
+			flusher.Flush()
 		}
 	}
 }
