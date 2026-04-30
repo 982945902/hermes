@@ -89,13 +89,17 @@ func registerEmbeddedFrontend(r *gin.Engine, embedded embed.FS) bool {
 	if _, err := fs.Stat(sub, "index.html"); err != nil {
 		return false
 	}
+	index, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		return false
+	}
 	r.StaticFS("/assets", http.FS(mustSub(sub, "assets")))
 	r.NoRoute(func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") || strings.HasPrefix(c.Request.URL.Path, "/v1/") {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
-		c.FileFromFS("index.html", http.FS(sub))
+		c.Data(http.StatusOK, "text/html; charset=utf-8", index)
 	})
 	return true
 }
