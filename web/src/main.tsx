@@ -519,19 +519,6 @@ function Editor({
     return (externalDrafts[upstreamModel] ?? selectedExternal) || upstreamModel
   }
 
-  function uniqueExternalName(source: Channel, name: string, existingExternal: string) {
-    if (!source.models.some((item) => item !== existingExternal && item === name)) {
-      return name
-    }
-    let index = 2
-    let candidate = `${name}-${index}`
-    while (source.models.some((item) => item !== existingExternal && item === candidate)) {
-      index++
-      candidate = `${name}-${index}`
-    }
-    return candidate
-  }
-
   function setExternalDraft(upstreamModel: string, externalModel: string) {
     setExternalDrafts((drafts) => ({ ...drafts, [upstreamModel]: externalModel }))
   }
@@ -545,13 +532,10 @@ function Editor({
         setModelError('对外模型名称不能为空')
         return current
       }
-      if (current.models.some((item) => item !== existingExternal && item === nextExternal)) {
-        setModelError(`对外模型 ${nextExternal} 已存在`)
-        return current
-      }
-      const nextModels = current.models.filter((item) => item !== existingExternal)
+      const nextModels = current.models.filter((item) => item !== existingExternal && item !== nextExternal)
       const nextMapping = { ...current.model_mapping }
       delete nextMapping[existingExternal]
+      delete nextMapping[nextExternal]
       nextModels.push(nextExternal)
       nextMapping[nextExternal] = upstreamModel
       setModelError('')
@@ -573,9 +557,9 @@ function Editor({
           setModelError('请填写对外模型名称')
           return current
         }
-        if (current.models.some((item) => item !== existingExternal && item === externalModel)) {
-          externalModel = uniqueExternalName(current, externalModel, existingExternal)
-          setExternalDrafts((drafts) => ({ ...drafts, [upstreamModel]: externalModel }))
+        delete nextMapping[externalModel]
+        for (let i = nextModels.length - 1; i >= 0; i--) {
+          if (nextModels[i] === externalModel) nextModels.splice(i, 1)
         }
         nextModels.push(externalModel)
         nextMapping[externalModel] = upstreamModel
