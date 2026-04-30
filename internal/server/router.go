@@ -1,6 +1,8 @@
 package server
 
 import (
+	"embed"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"github.com/982945902/hermes/internal/api"
 	"github.com/982945902/hermes/internal/auth"
 	"github.com/982945902/hermes/internal/config"
+	"github.com/982945902/hermes/internal/frontend"
 	"github.com/982945902/hermes/internal/relay"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -55,6 +58,9 @@ func NewRouter(config config.Config, authService *auth.Service, admin *api.Admin
 }
 
 func registerFrontend(r *gin.Engine, dist string) {
+	if registerEmbeddedFrontend(r, frontend.Dist) {
+		return
+	}
 	if dist == "" {
 		return
 	}
@@ -73,4 +79,31 @@ func registerFrontend(r *gin.Engine, dist string) {
 		}
 		c.File(filepath.Join(dist, "index.html"))
 	})
+}
+
+func registerEmbeddedFrontend(r *gin.Engine, embedded embed.FS) bool {
+	sub, err := fs.Sub(embedded, "dist")
+	if err != nil {
+		return false
+	}
+	if _, err := fs.Stat(sub, "index.html"); err != nil {
+		return false
+	}
+	r.StaticFS("/assets", http.FS(mustSub(sub, "assets")))
+	r.NoRoute(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") || strings.HasPrefix(c.Request.URL.Path, "/v1/") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.FileFromFS("index.html", http.FS(sub))
+	})
+	return true
+}
+
+func mustSub(fsys fs.FS, dir string) fs.FS {
+	sub, err := fs.Sub(fsys, dir)
+	if err != nil {
+		return fsys
+	}
+	return sub
 }

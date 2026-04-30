@@ -27,12 +27,10 @@ bun install
 bun run dev
 ```
 
-Production frontend build:
+Production build:
 
 ```bash
-cd web
-bun run build
+./scripts/build.sh
 ```
 
-Gin serves `web/dist` when it exists, so the backend and frontend can be deployed as one service.
-
+The build script builds the React frontend first, copies it into the Go embed directory, then builds `bin/hermes`. The resulting binary serves the embedded admin frontend and the backend APIs as one service.

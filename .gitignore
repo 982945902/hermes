@@ -12,3 +12,5 @@ coverage.out
 # Frontend
 web/node_modules/
 web/dist/
+internal/frontend/dist/*
+!internal/frontend/dist/index.html
