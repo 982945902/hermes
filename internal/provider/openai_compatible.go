@@ -85,7 +85,7 @@ func (p *OpenAICompatible) FetchModels(ctx context.Context, channel model.Channe
 	return parseModelList(data), nil
 }
 
-func (p *OpenAICompatible) Test(ctx context.Context, channel model.Channel, modelName string, prompt string) (string, error) {
+func (p *OpenAICompatible) Test(ctx context.Context, channel model.Channel, modelName string, upstreamModel string, prompt string) (string, error) {
 	if len(channel.Models) == 0 {
 		return "", fmt.Errorf("channel has no models")
 	}
@@ -95,7 +95,9 @@ func (p *OpenAICompatible) Test(ctx context.Context, channel model.Channel, mode
 	if strings.TrimSpace(modelName) == "" {
 		modelName = channel.Models[0]
 	}
-	upstreamModel := channel.UpstreamModel(modelName)
+	if strings.TrimSpace(upstreamModel) == "" {
+		upstreamModel = channel.UpstreamModel(modelName)
+	}
 	body, err := json.Marshal(map[string]any{
 		"model":      upstreamModel,
 		"messages":   []map[string]string{{"role": "user", "content": prompt}},

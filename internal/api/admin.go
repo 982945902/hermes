@@ -31,8 +31,9 @@ type loginRequest struct {
 }
 
 type channelTestRequest struct {
-	Prompt string `json:"prompt"`
-	Model  string `json:"model"`
+	Prompt        string `json:"prompt"`
+	Model         string `json:"model"`
+	UpstreamModel string `json:"upstream_model"`
 }
 
 type fetchModelsRequest struct {
@@ -167,9 +168,12 @@ func (h *AdminHandler) TestChannel(c *gin.Context) {
 	if modelName == "" && len(channel.Models) > 0 {
 		modelName = channel.Models[0]
 	}
-	upstreamModel := channel.UpstreamModel(modelName)
+	upstreamModel := strings.TrimSpace(req.UpstreamModel)
+	if upstreamModel == "" {
+		upstreamModel = channel.UpstreamModel(modelName)
+	}
 	started := time.Now()
-	result, testErr := h.provider.Test(ctx, *channel, req.Model, req.Prompt)
+	result, testErr := h.provider.Test(ctx, *channel, modelName, upstreamModel, req.Prompt)
 	latency := time.Since(started)
 	lastError := ""
 	if testErr != nil {

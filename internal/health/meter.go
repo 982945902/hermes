@@ -127,13 +127,9 @@ func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 	if filterRoutes {
 		for _, channel := range activeChannels[0] {
 			channel.Normalize()
-			channelID := channel.ID.Hex()
-			for _, externalModel := range channel.Models {
-				if externalModel == "" {
-					continue
-				}
-				key := metricKey(channelID, externalModel, channel.UpstreamModel(externalModel))
-				activeRoute[key] = channel
+			for _, route := range channel.Routes() {
+				key := metricKey(route.Channel.ID.Hex(), route.ExternalModel, route.UpstreamModel)
+				activeRoute[key] = route.Channel
 			}
 		}
 	}
@@ -185,18 +181,17 @@ func (m *Meter) Snapshot(activeChannels ...[]model.Channel) Snapshot {
 	return Snapshot{GeneratedAt: time.Now(), Channels: channels}
 }
 
-func (m *Meter) Rank(channels []model.Channel, externalModel string) []model.Channel {
+func (m *Meter) Rank(routes []model.ChannelRoute) []model.ChannelRoute {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	type candidate struct {
-		channel model.Channel
-		value   float64
+		route model.ChannelRoute
+		value float64
 	}
-	candidates := make([]candidate, 0, len(channels))
-	for _, channel := range channels {
-		upstreamModel := channel.UpstreamModel(externalModel)
-		stat := m.ensureLocked(channel, externalModel, upstreamModel)
+	candidates := make([]candidate, 0, len(routes))
+	for _, route := range routes {
+		stat := m.ensureLocked(route.Channel, route.ExternalModel, route.UpstreamModel)
 		if stat.Tier == TierUnavailable {
 			continue
 		}
@@ -211,36 +206,35 @@ func (m *Meter) Rank(channels []model.Channel, externalModel string) []model.Cha
 			sigma = 0.16
 			score *= 0.72
 		}
-		weight := float64(channel.Weight)
+		weight := float64(route.Channel.Weight)
 		if weight <= 0 {
 			weight = 1
 		}
 		sampled := score + m.rand.NormFloat64()*sigma
-		value := sampled*math.Sqrt(weight) + float64(channel.Priority)*0.02
-		candidates = append(candidates, candidate{channel: channel, value: value})
+		value := sampled*math.Sqrt(weight) + float64(route.Channel.Priority)*0.02
+		candidates = append(candidates, candidate{route: route, value: value})
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].value > candidates[j].value
 	})
-	ranked := make([]model.Channel, len(candidates))
+	ranked := make([]model.ChannelRoute, len(candidates))
 	for i, candidate := range candidates {
-		ranked[i] = candidate.channel
+		ranked[i] = candidate.route
 	}
 	return ranked
 }
 
-func (m *Meter) ProbeCandidates(channels []model.Channel, selectedID string, externalModel string) []model.Channel {
+func (m *Meter) ProbeCandidates(routes []model.ChannelRoute, selectedKey string) []model.ChannelRoute {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	now := time.Now()
-	var result []model.Channel
-	for _, channel := range channels {
-		if channel.ID.Hex() == selectedID {
+	var result []model.ChannelRoute
+	for _, route := range routes {
+		if route.Key() == selectedKey {
 			continue
 		}
-		upstreamModel := channel.UpstreamModel(externalModel)
-		stat := m.ensureLocked(channel, externalModel, upstreamModel)
+		stat := m.ensureLocked(route.Channel, route.ExternalModel, route.UpstreamModel)
 		if stat.Tier != TierUnavailable {
 			continue
 		}
@@ -251,7 +245,7 @@ func (m *Meter) ProbeCandidates(channels []model.Channel, selectedID string, ext
 			continue
 		}
 		stat.LastProbeAt = now
-		result = append(result, channel)
+		result = append(result, route)
 	}
 	return result
 }

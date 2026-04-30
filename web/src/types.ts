@@ -6,6 +6,7 @@ export type Channel = {
   api_key?: string
   models: string[]
   model_mapping: Record<string, string>
+  model_mappings?: Record<string, string[]>
   extra_headers: Record<string, string>
   strategy: Record<string, unknown>
   enabled: boolean

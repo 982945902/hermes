@@ -15,7 +15,7 @@ type ChannelCache struct {
 	interval  time.Duration
 	mu        sync.RWMutex
 	byID      map[string]model.Channel
-	byModel   map[string][]model.Channel
+	byModel   map[string][]model.ChannelRoute
 	all       []model.Channel
 	updatedAt time.Time
 }
@@ -25,7 +25,7 @@ func NewChannelCache(store *store.Store, interval time.Duration) *ChannelCache {
 		store:    store,
 		interval: interval,
 		byID:     map[string]model.Channel{},
-		byModel:  map[string][]model.Channel{},
+		byModel:  map[string][]model.ChannelRoute{},
 	}
 }
 
@@ -35,7 +35,7 @@ func (c *ChannelCache) Load(ctx context.Context) error {
 		return err
 	}
 	byID := make(map[string]model.Channel, len(channels))
-	byModel := make(map[string][]model.Channel)
+	byModel := make(map[string][]model.ChannelRoute)
 	all := make([]model.Channel, 0, len(channels))
 	for _, channel := range channels {
 		channel.Normalize()
@@ -45,11 +45,11 @@ func (c *ChannelCache) Load(ctx context.Context) error {
 		if !channel.Enabled {
 			continue
 		}
-		for _, modelName := range channel.Models {
-			if modelName == "" {
+		for _, route := range channel.Routes() {
+			if route.ExternalModel == "" || route.UpstreamModel == "" {
 				continue
 			}
-			byModel[modelName] = append(byModel[modelName], channel)
+			byModel[route.ExternalModel] = append(byModel[route.ExternalModel], route)
 		}
 	}
 	c.mu.Lock()
@@ -91,12 +91,12 @@ func (c *ChannelCache) ReloadAsync() {
 	}()
 }
 
-func (c *ChannelCache) FindByModel(modelName string) []model.Channel {
+func (c *ChannelCache) FindByModel(modelName string) []model.ChannelRoute {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	channels := c.byModel[modelName]
-	out := make([]model.Channel, len(channels))
-	copy(out, channels)
+	routes := c.byModel[modelName]
+	out := make([]model.ChannelRoute, len(routes))
+	copy(out, routes)
 	return out
 }
 

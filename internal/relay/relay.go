@@ -83,20 +83,21 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	channels := h.cache.FindByModel(envelope.Model)
-	if len(channels) == 0 {
+	routes := h.cache.FindByModel(envelope.Model)
+	if len(routes) == 0 {
 		openAIError(c, http.StatusNotFound, "model is not available")
 		return
 	}
-	ordered := h.meter.Rank(channels, envelope.Model)
+	ordered := h.meter.Rank(routes)
 	if len(ordered) == 0 {
 		openAIError(c, http.StatusServiceUnavailable, "all matching channels are currently unavailable")
 		return
 	}
 
 	var lastErr error
-	for _, channel := range ordered {
-		upstreamModel := channel.UpstreamModel(envelope.Model)
+	for _, route := range ordered {
+		channel := route.Channel
+		upstreamModel := route.UpstreamModel
 		req, err := h.provider.BuildChatRequest(c.Request.Context(), channel, body, upstreamModel)
 		if err != nil {
 			lastErr = err
@@ -106,21 +107,21 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		resp, err := h.provider.Do(req)
 		latency := time.Since(started)
 		if err != nil {
-			h.meter.Record(channel, envelope.Model, upstreamModel, latency, 0, false, 0, err.Error())
+			h.meter.Record(channel, route.ExternalModel, upstreamModel, latency, 0, false, 0, err.Error())
 			lastErr = err
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			errText := copyUpstreamError(resp)
-			h.meter.Record(channel, envelope.Model, upstreamModel, latency, resp.StatusCode, false, 0, errText.Error())
+			h.meter.Record(channel, route.ExternalModel, upstreamModel, latency, resp.StatusCode, false, 0, errText.Error())
 			lastErr = errText
 			if c.Writer.Written() {
 				return
 			}
 			continue
 		}
-		h.meter.Record(channel, envelope.Model, upstreamModel, latency, resp.StatusCode, true, estimateQuality(resp), "")
-		h.probeUnavailable(c, channels, channel.ID.Hex(), body, envelope.Model)
+		h.meter.Record(channel, route.ExternalModel, upstreamModel, latency, resp.StatusCode, true, estimateQuality(resp), "")
+		h.probeUnavailable(c, routes, route.Key(), body)
 		proxyResponse(c, resp, h.guard)
 		return
 	}
@@ -130,24 +131,23 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	openAIError(c, http.StatusBadGateway, lastErr.Error())
 }
 
-func (h *Handler) probeUnavailable(c *gin.Context, channels []model.Channel, selectedID string, body []byte, modelName string) {
-	probes := h.meter.ProbeCandidates(channels, selectedID, modelName)
-	for _, channel := range probes {
-		channel := channel
-		upstreamModel := channel.UpstreamModel(modelName)
+func (h *Handler) probeUnavailable(c *gin.Context, routes []model.ChannelRoute, selectedKey string, body []byte) {
+	probes := h.meter.ProbeCandidates(routes, selectedKey)
+	for _, route := range probes {
+		route := route
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			req, err := h.provider.BuildChatRequest(ctx, channel, body, upstreamModel)
+			req, err := h.provider.BuildChatRequest(ctx, route.Channel, body, route.UpstreamModel)
 			if err != nil {
-				h.meter.Record(channel, modelName, upstreamModel, 0, 0, false, 0, err.Error())
+				h.meter.Record(route.Channel, route.ExternalModel, route.UpstreamModel, 0, 0, false, 0, err.Error())
 				return
 			}
 			started := time.Now()
 			resp, err := h.provider.Do(req)
 			latency := time.Since(started)
 			if err != nil {
-				h.meter.Record(channel, modelName, upstreamModel, latency, 0, false, 0, err.Error())
+				h.meter.Record(route.Channel, route.ExternalModel, route.UpstreamModel, latency, 0, false, 0, err.Error())
 				return
 			}
 			defer resp.Body.Close()
@@ -157,7 +157,7 @@ func (h *Handler) probeUnavailable(c *gin.Context, channels []model.Channel, sel
 			if !success {
 				errText = resp.Status
 			}
-			h.meter.Record(channel, modelName, upstreamModel, latency, resp.StatusCode, success, boolQuality(success), errText)
+			h.meter.Record(route.Channel, route.ExternalModel, route.UpstreamModel, latency, resp.StatusCode, success, boolQuality(success), errText)
 		}()
 	}
 }

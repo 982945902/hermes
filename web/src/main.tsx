@@ -45,12 +45,37 @@ function emptyChannel(): Channel {
     api_key: '',
     models: [],
     model_mapping: {},
+    model_mappings: {},
     extra_headers: presets.openrouter.extra_headers,
     strategy: {},
     enabled: true,
     priority: 0,
     weight: 1,
   }
+}
+
+const routeSeparator = '\u0000'
+
+function upstreamsFor(channel: Channel, externalModel: string) {
+  const multi = channel.model_mappings?.[externalModel]?.filter(Boolean)
+  if (multi && multi.length > 0) return Array.from(new Set(multi))
+  const single = channel.model_mapping?.[externalModel] || externalModel
+  return single ? [single] : []
+}
+
+function modelRoutes(channel: Channel) {
+  return channel.models.flatMap((externalModel) =>
+    upstreamsFor(channel, externalModel).map((upstreamModel) => ({ externalModel, upstreamModel })),
+  )
+}
+
+function routeValue(externalModel: string, upstreamModel: string) {
+  return `${externalModel}${routeSeparator}${upstreamModel}`
+}
+
+function parseRouteValue(value: string) {
+  const [externalModel = '', upstreamModel = ''] = value.split(routeSeparator)
+  return { externalModel, upstreamModel }
 }
 
 function App() {
@@ -309,15 +334,19 @@ function Channels() {
 
   async function runTest(channel: Channel) {
     if (!channel.id) return
-    const modelName = testModel || channel.models[0] || ''
-    if (!modelName) {
+    const routes = modelRoutes(channel)
+    const selectedRoute = parseRouteValue(testModel)
+    const fallbackRoute = routes[0]
+    const modelName = selectedRoute.externalModel || fallbackRoute?.externalModel || ''
+    const upstreamModel = selectedRoute.upstreamModel || fallbackRoute?.upstreamModel || ''
+    if (!modelName || !upstreamModel) {
       setMessage('请先为渠道选择至少一个模型')
       return
     }
     setMessage(`正在测试 ${channel.name}`)
     setTestMessages((items) => [...items, { role: 'user', content: testPrompt }])
     try {
-      const result = await testChannel(channel.id, modelName, testPrompt)
+      const result = await testChannel(channel.id, modelName, upstreamModel, testPrompt)
       setMessage(`${channel.name} 测试成功`)
       setTestMessages((items) => [...items, { role: 'assistant', content: result.response || '(empty response)' }])
       await load()
@@ -433,8 +462,7 @@ function Editor({
   const availableModels = React.useMemo(() => {
     const set = new Set<string>([
       ...upstreamModels,
-      ...Object.values(channel.model_mapping || {}),
-      ...channel.models.map((modelName) => channel.model_mapping[modelName] || modelName),
+      ...modelRoutes(channel).map((route) => route.upstreamModel),
     ])
     const query = modelSearch.toLowerCase()
     return Array.from(set).filter((upstreamModel) => {
@@ -444,13 +472,12 @@ function Editor({
         upstreamModel
       return upstreamModel.toLowerCase().includes(query) || externalModel.toLowerCase().includes(query)
     })
-  }, [channel.models, channel.model_mapping, externalDrafts, modelSearch, upstreamModels])
+  }, [channel.models, channel.model_mapping, channel.model_mappings, externalDrafts, modelSearch, upstreamModels])
 
   React.useEffect(() => {
     const nextDrafts: Record<string, string> = {}
     const nextUpstreamModels = new Set<string>()
-    for (const externalModel of channel.models) {
-      const upstreamModel = channel.model_mapping[externalModel] || externalModel
+    for (const { externalModel, upstreamModel } of modelRoutes(channel)) {
       nextUpstreamModels.add(upstreamModel)
       nextDrafts[upstreamModel] = externalModel
     }
@@ -465,11 +492,13 @@ function Editor({
   }
 
   React.useEffect(() => {
-    if (!channel.models.length) return
-    if (!testModel || !channel.models.includes(testModel)) {
-      setTestModel(channel.models[0])
+    const routes = modelRoutes(channel)
+    if (!routes.length) return
+    const values = routes.map((route) => routeValue(route.externalModel, route.upstreamModel))
+    if (!testModel || !values.includes(testModel)) {
+      setTestModel(values[0])
     }
-  }, [channel.models, testModel, setTestModel])
+  }, [channel.models, channel.model_mapping, channel.model_mappings, testModel, setTestModel])
 
   function applyProvider(provider: string) {
     const preset = presets[provider as keyof typeof presets] || presets.custom
@@ -490,8 +519,7 @@ function Editor({
       setUpstreamModels(result.data)
       setExternalDrafts(() => {
         const nextDrafts: Record<string, string> = {}
-        for (const externalModel of channel.models) {
-          const upstreamModel = channel.model_mapping[externalModel] || externalModel
+        for (const { externalModel, upstreamModel } of modelRoutes(channel)) {
           nextDrafts[upstreamModel] = externalModel
         }
         for (const upstreamModel of result.data) {
@@ -507,7 +535,7 @@ function Editor({
   }
 
   function findExternalIn(source: Channel, upstreamModel: string) {
-    return source.models.find((modelName) => (source.model_mapping[modelName] || modelName) === upstreamModel) || ''
+    return modelRoutes(source).find((route) => route.upstreamModel === upstreamModel)?.externalModel || ''
   }
 
   function findExternalModel(upstreamModel: string) {
@@ -532,14 +560,13 @@ function Editor({
         setModelError('对外模型名称不能为空')
         return current
       }
-      const nextModels = current.models.filter((item) => item !== existingExternal && item !== nextExternal)
-      const nextMapping = { ...current.model_mapping }
-      delete nextMapping[existingExternal]
-      delete nextMapping[nextExternal]
-      nextModels.push(nextExternal)
-      nextMapping[nextExternal] = upstreamModel
+      const nextMappings = cloneModelMappings(current)
+      removeUpstream(nextMappings, existingExternal, upstreamModel)
+      addUpstream(nextMappings, nextExternal, upstreamModel)
+      const nextModels = modelsFromMappings(nextMappings)
+      const nextMapping = firstMappings(nextMappings)
       setModelError('')
-      return { ...current, models: Array.from(new Set(nextModels)), model_mapping: nextMapping }
+      return { ...current, models: nextModels, model_mapping: nextMapping, model_mappings: nextMappings }
     })
   }
 
@@ -547,9 +574,8 @@ function Editor({
     setModelError('')
     setChannel((current) => {
       const existingExternal = findExternalIn(current, upstreamModel)
-      const nextModels = current.models.filter((item) => item !== existingExternal)
-      const nextMapping = { ...current.model_mapping }
-      if (existingExternal) delete nextMapping[existingExternal]
+      const nextMappings = cloneModelMappings(current)
+      if (existingExternal) removeUpstream(nextMappings, existingExternal, upstreamModel)
       if (checked) {
         const rawExternal = externalDrafts[upstreamModel] ?? existingExternal
         let externalModel = (rawExternal || upstreamModel).trim()
@@ -557,14 +583,10 @@ function Editor({
           setModelError('请填写对外模型名称')
           return current
         }
-        delete nextMapping[externalModel]
-        for (let i = nextModels.length - 1; i >= 0; i--) {
-          if (nextModels[i] === externalModel) nextModels.splice(i, 1)
-        }
-        nextModels.push(externalModel)
-        nextMapping[externalModel] = upstreamModel
+        addUpstream(nextMappings, externalModel, upstreamModel)
       }
-      return { ...current, models: Array.from(new Set(nextModels)), model_mapping: nextMapping }
+      const nextModels = modelsFromMappings(nextMappings)
+      return { ...current, models: nextModels, model_mapping: firstMappings(nextMappings), model_mappings: nextMappings }
     })
   }
 
@@ -655,10 +677,10 @@ function Editor({
         <label>
           测试模型
           <select value={testModel} onChange={(e) => setTestModel(e.target.value)}>
-            {channel.models.length === 0 ? <option value="">请先勾选模型</option> : null}
-            {channel.models.map((modelName) => (
-              <option key={modelName} value={modelName}>
-                {modelName} → {channel.model_mapping[modelName] || modelName}
+            {modelRoutes(channel).length === 0 ? <option value="">请先勾选模型</option> : null}
+            {modelRoutes(channel).map(({ externalModel, upstreamModel }) => (
+              <option key={routeValue(externalModel, upstreamModel)} value={routeValue(externalModel, upstreamModel)}>
+                {externalModel} → {upstreamModel}
               </option>
             ))}
           </select>
@@ -717,16 +739,55 @@ function parseObject(value: string): Record<string, string> {
   return {}
 }
 
-function normalizeChannel(channel: Channel): Channel {
-  const models = channel.models.map((modelName) => modelName.trim()).filter(Boolean)
-  const model_mapping: Record<string, string> = {}
-  for (const modelName of models) {
-    model_mapping[modelName] = channel.model_mapping?.[modelName] || modelName
+function cloneModelMappings(channel: Channel): Record<string, string[]> {
+  const mappings: Record<string, string[]> = {}
+  for (const externalModel of channel.models) {
+    const upstreamModels = upstreamsFor(channel, externalModel)
+    if (upstreamModels.length > 0) mappings[externalModel] = [...upstreamModels]
   }
+  return mappings
+}
+
+function addUpstream(mappings: Record<string, string[]>, externalModel: string, upstreamModel: string) {
+  externalModel = externalModel.trim()
+  upstreamModel = upstreamModel.trim()
+  if (!externalModel || !upstreamModel) return
+  const current = mappings[externalModel] || []
+  if (!current.includes(upstreamModel)) {
+    mappings[externalModel] = [...current, upstreamModel]
+  }
+}
+
+function removeUpstream(mappings: Record<string, string[]>, externalModel: string, upstreamModel: string) {
+  const next = (mappings[externalModel] || []).filter((item) => item !== upstreamModel)
+  if (next.length === 0) {
+    delete mappings[externalModel]
+    return
+  }
+  mappings[externalModel] = next
+}
+
+function modelsFromMappings(mappings: Record<string, string[]>) {
+  return Object.keys(mappings).filter((modelName) => mappings[modelName]?.length > 0)
+}
+
+function firstMappings(mappings: Record<string, string[]>) {
+  const result: Record<string, string> = {}
+  for (const [modelName, upstreamModels] of Object.entries(mappings)) {
+    if (upstreamModels[0]) result[modelName] = upstreamModels[0]
+  }
+  return result
+}
+
+function normalizeChannel(channel: Channel): Channel {
+  const model_mappings = cloneModelMappings(channel)
+  const models = modelsFromMappings(model_mappings)
+  const model_mapping = firstMappings(model_mappings)
   return {
     ...channel,
     models,
     model_mapping,
+    model_mappings,
     extra_headers: channel.extra_headers || {},
     strategy: channel.strategy || {},
     weight: channel.weight > 0 ? channel.weight : 1,
