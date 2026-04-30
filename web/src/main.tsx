@@ -246,26 +246,33 @@ function Channels() {
   const [testModel, setTestModel] = React.useState('')
   const [testMessages, setTestMessages] = React.useState<Array<{ role: 'user' | 'assistant'; content: string }>>([])
 
-  async function load() {
+  async function load(selectChannelId?: string, selectFirst = false) {
     const data = await listChannels()
     setChannels(data.data)
+    const selected = selectChannelId ? data.data.find((item) => item.id === selectChannelId) : undefined
+    if (selected) {
+      setEditing(selected)
+      return
+    }
+    if (selectFirst && data.data.length > 0) {
+      setEditing(data.data[0])
+    }
   }
 
   React.useEffect(() => {
-    load().catch((err) => setMessage(err.message))
+    load(undefined, true).catch((err) => setMessage(err.message))
   }, [])
 
   async function save() {
     setMessage('')
     try {
       const payload = normalizeChannel(editing)
-      if (payload.id) await updateChannel(payload)
-      else await createChannel(payload)
-      setEditing(emptyChannel())
-      await load()
-      setMessage('Saved')
+      const saved = payload.id ? await updateChannel(payload) : await createChannel(payload)
+      setEditing(saved)
+      await load(saved.id, false)
+      setMessage('已保存')
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Save failed')
+      setMessage(err instanceof Error ? err.message : '保存失败')
     }
   }
 
@@ -294,7 +301,15 @@ function Channels() {
       <div className="panel">
         <div className="panel-title">
           <h2>渠道池</h2>
-          <button className="icon-button" onClick={() => setEditing(emptyChannel())} title="新建渠道">
+          <button
+            className="icon-button"
+            onClick={() => {
+              setEditing(emptyChannel())
+              setTestMessages([])
+              setMessage('正在新建渠道')
+            }}
+            title="新建渠道"
+          >
             <Plus size={18} />
           </button>
         </div>
@@ -308,7 +323,15 @@ function Channels() {
               <div>{channel.models.length} 个模型</div>
               <div className={channel.enabled ? 'ok' : 'muted'}>{channel.enabled ? '启用' : '停用'}</div>
               <div className="actions">
-                <button className="icon-button" onClick={() => setEditing(channel)} title="编辑">
+                <button
+                  className="icon-button"
+                  onClick={() => {
+                    setEditing(channel)
+                    setTestMessages([])
+                    setMessage(`正在编辑 ${channel.name}`)
+                  }}
+                  title="编辑"
+                >
                   <Settings size={17} />
                 </button>
                 <button className="icon-button" onClick={() => runTest(channel)} title="测试">
@@ -319,7 +342,7 @@ function Channels() {
                   onClick={async () => {
                     if (channel.id) {
                       await deleteChannel(channel.id)
-                      await load()
+                      await load(undefined, true)
                     }
                   }}
                   title="删除"
