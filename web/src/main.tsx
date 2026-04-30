@@ -365,6 +365,7 @@ function Channels() {
         testModel={testModel}
         setTestModel={setTestModel}
         testMessages={testMessages}
+        onRunTest={() => runTest(editing)}
       />
     </section>
   )
@@ -380,6 +381,7 @@ function Editor({
   testModel,
   setTestModel,
   testMessages,
+  onRunTest,
 }: {
   channel: Channel
   setChannel: (channel: Channel) => void
@@ -390,6 +392,7 @@ function Editor({
   testModel: string
   setTestModel: (value: string) => void
   testMessages: Array<{ role: 'user' | 'assistant'; content: string }>
+  onRunTest: () => void
 }) {
   const [modelSearch, setModelSearch] = React.useState('')
   const [modelError, setModelError] = React.useState('')
@@ -541,6 +544,10 @@ function Editor({
           用户消息
           <textarea value={testPrompt} onChange={(e) => setTestPrompt(e.target.value)} />
         </label>
+        <button className="primary" onClick={onRunTest} disabled={!channel.id || channel.models.length === 0}>
+          <Activity size={17} />
+          发送测试
+        </button>
         <div className="chat-preview">
           {testMessages.length === 0 ? (
             <p className="muted">点击渠道行里的测试按钮发送当前消息。</p>
