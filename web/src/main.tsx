@@ -446,6 +446,20 @@ function Editor({
     })
   }, [channel.models, channel.model_mapping, externalDrafts, modelSearch, upstreamModels])
 
+  React.useEffect(() => {
+    const nextDrafts: Record<string, string> = {}
+    const nextUpstreamModels = new Set<string>()
+    for (const externalModel of channel.models) {
+      const upstreamModel = channel.model_mapping[externalModel] || externalModel
+      nextUpstreamModels.add(upstreamModel)
+      nextDrafts[upstreamModel] = externalModel
+    }
+    setUpstreamModels(Array.from(nextUpstreamModels))
+    setExternalDrafts(nextDrafts)
+    setModelError('')
+    setModelSearch('')
+  }, [channel.id])
+
   function patch(update: Partial<Channel>) {
     setChannel((current) => ({ ...current, ...update }))
   }
@@ -474,8 +488,12 @@ function Editor({
         extra_headers: channel.extra_headers || {},
       })
       setUpstreamModels(result.data)
-      setExternalDrafts((drafts) => {
-        const nextDrafts = { ...drafts }
+      setExternalDrafts(() => {
+        const nextDrafts: Record<string, string> = {}
+        for (const externalModel of channel.models) {
+          const upstreamModel = channel.model_mapping[externalModel] || externalModel
+          nextDrafts[upstreamModel] = externalModel
+        }
         for (const upstreamModel of result.data) {
           if (!nextDrafts[upstreamModel]) nextDrafts[upstreamModel] = findExternalModel(upstreamModel) || upstreamModel
         }
@@ -499,6 +517,19 @@ function Editor({
   function externalValue(upstreamModel: string) {
     const selectedExternal = findExternalModel(upstreamModel)
     return (externalDrafts[upstreamModel] ?? selectedExternal) || upstreamModel
+  }
+
+  function uniqueExternalName(source: Channel, name: string, existingExternal: string) {
+    if (!source.models.some((item) => item !== existingExternal && item === name)) {
+      return name
+    }
+    let index = 2
+    let candidate = `${name}-${index}`
+    while (source.models.some((item) => item !== existingExternal && item === candidate)) {
+      index++
+      candidate = `${name}-${index}`
+    }
+    return candidate
   }
 
   function setExternalDraft(upstreamModel: string, externalModel: string) {
@@ -537,14 +568,14 @@ function Editor({
       if (existingExternal) delete nextMapping[existingExternal]
       if (checked) {
         const rawExternal = externalDrafts[upstreamModel] ?? existingExternal
-        const externalModel = (rawExternal || upstreamModel).trim()
+        let externalModel = (rawExternal || upstreamModel).trim()
         if (!externalModel) {
           setModelError('请填写对外模型名称')
           return current
         }
         if (current.models.some((item) => item !== existingExternal && item === externalModel)) {
-          setModelError(`对外模型 ${externalModel} 已存在`)
-          return current
+          externalModel = uniqueExternalName(current, externalModel, existingExternal)
+          setExternalDrafts((drafts) => ({ ...drafts, [upstreamModel]: externalModel }))
         }
         nextModels.push(externalModel)
         nextMapping[externalModel] = upstreamModel
